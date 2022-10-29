@@ -10,18 +10,21 @@ fn main() {
     let replica_a = Mutex::new(Replica::new(
         0,
         nr_replicas,
+        CalculatorStateMachine {},
         client_tx.clone(),
         replica_tx.clone(),
     ));
     let replica_b = Mutex::new(Replica::new(
         1,
         nr_replicas,
+        CalculatorStateMachine {},
         client_tx.clone(),
         replica_tx.clone(),
     ));
     let replica_c = Mutex::new(Replica::new(
         2,
         nr_replicas,
+        CalculatorStateMachine {},
         client_tx.clone(),
         replica_tx.clone(),
     ));
@@ -59,4 +62,8 @@ enum CalculatorOperation {
 
 struct CalculatorStateMachine {}
 
-impl StateMachine<CalculatorOperation> for CalculatorStateMachine {}
+impl StateMachine<CalculatorOperation> for CalculatorStateMachine {
+    fn apply(&self, op: CalculatorOperation) {
+        println!("Applying {:?}", op);
+    }
+}

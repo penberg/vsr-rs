@@ -14,17 +14,20 @@ enum Status {
 /// State machine.
 pub trait StateMachine<Op>
 where
-    Op: Clone,
+    Op: Clone + Debug + Send,
 {
+    fn apply(&self, op: Op);
 }
 
 #[derive(Debug)]
-pub struct Replica<Op>
+pub struct Replica<S, Op>
 where
+    S: StateMachine<Op>,
     Op: Clone + Debug + Send,
 {
     self_id: ReplicaID,
     nr_replicas: usize,
+    state_machine: S,
     client_tx: Sender<()>,
     replica_tx: Sender<(ReplicaID, Message<Op>)>,
     status: Status,
@@ -35,16 +38,18 @@ where
     acks: HashMap<usize, usize>,
 }
 
-impl<Op> Replica<Op>
+impl<S, Op> Replica<S, Op>
 where
+    S: StateMachine<Op>,
     Op: Clone + Debug + Send,
 {
     pub fn new(
         self_id: ReplicaID,
         nr_replicas: usize,
+        state_machine: S,
         client_tx: Sender<()>,
         replica_tx: Sender<(ReplicaID, Message<Op>)>,
-    ) -> Replica<Op> {
+    ) -> Replica<S, Op> {
         let status = Status::Normal;
         let view_number = 0;
         let commit_number = 0;
@@ -54,6 +59,7 @@ where
         Replica {
             self_id,
             nr_replicas,
+            state_machine,
             client_tx,
             replica_tx,
             status,
@@ -116,6 +122,9 @@ where
                 let acks = self.acks.get_mut(&op_number).unwrap();
                 *acks += 1;
                 if *acks == self.quorum() {
+                    let op = &self.log[op_number - 1];
+                    self.state_machine.apply(op.clone());
+                    self.commit_number += 1;
                     self.client_tx.send(()).unwrap();
                 }
             }
