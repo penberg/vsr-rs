@@ -101,7 +101,6 @@ where
                 inner.acks.insert(op_number, 1);
                 // TODO: Update client_table
                 let view_number = inner.view_number;
-                let op_number = inner.op_number;
                 let commit_number = inner.commit_number;
                 self.broadcast_allbutself(Message::Prepare {
                     view_number,
