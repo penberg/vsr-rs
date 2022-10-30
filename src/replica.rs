@@ -134,7 +134,6 @@ where
                     );
                     return;
                 }
-                // TODO: If op number is not strictly consecutive, initiate recovery.
                 assert_eq!(inner.op_number + 1, op_number);
                 inner.op_number += 1;
                 inner.log.push(op);
