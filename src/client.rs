@@ -8,14 +8,14 @@ use std::sync::Mutex;
 pub type ClientCallback = fn(RequestNumber);
 
 /// Client.
-pub struct Client<Operation>
+pub struct Client<Op>
 where
-    Operation: Clone + Debug + Send + Sync,
+    Op: Clone + Debug + Send + Sync,
 {
     pub client_id: ClientID,
     pub view_number: usize,
     pub nr_replicas: usize,
-    pub message_bus: Sender<(usize, Message<Operation>)>,
+    pub message_bus: Sender<(usize, Message<Op>)>,
     inner: Mutex<ClientInner>,
 }
 
