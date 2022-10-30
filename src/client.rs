@@ -45,19 +45,22 @@ where
         }
     }
 
-    pub fn request_sync(&self, op: Op) {
-        let pair = Arc::new((Mutex::new(false), Condvar::new()));
+    pub fn request_sync(&self, op: Op) -> RequestNumber {
+        let pair = Arc::new((Mutex::new(None), Condvar::new()));
         let pair_ = Arc::clone(&pair);
-        let callback = move |_| {
+        let callback = move |request_number| {
             let (lock, cvar) = &*pair_;
             let mut completed = lock.lock().unwrap();
-            *completed = true;
+            *completed = Some(request_number);
             cvar.notify_one();
         };
         self.request(op, Box::new(callback));
         let (lock, cvar) = &*pair;
         let mut completed = lock.lock().unwrap();
-        while !*completed {
+        loop {
+            if let Some(request_number) = *completed {
+                return request_number;
+            }
             completed = cvar.wait(completed).unwrap();
         }
     }
