@@ -113,7 +113,7 @@ where
                 view_number,
                 op,
                 op_number,
-                ..
+                commit_number,
             } => {
                 let mut inner = self.inner.lock().unwrap();
                 // TODO: If view number is not the same, initiate recovery.
@@ -123,6 +123,9 @@ where
                 inner.op_number += 1;
                 inner.log.push(op);
                 let view_number = inner.view_number;
+                for op_idx in inner.commit_number..commit_number {
+                    self.commit_op(&mut inner, op_idx);
+                }
                 self.replica_tx
                     .send((
                         self.primary_id(&inner),
@@ -143,15 +146,16 @@ where
                 let acks = inner.acks.get_mut(&op_number).unwrap();
                 *acks += 1;
                 if *acks == quorum(self.nr_replicas) {
-                    self.commit_op(&mut inner, op_number);
+                    self.commit_op(&mut inner, op_number - 1);
                     self.client_tx.send(()).unwrap();
                 }
             }
         }
     }
 
-    fn commit_op(&self, inner: &mut ReplicaInner<S, Op>, op_number: OpNumber) {
-        let op = &inner.log[op_number - 1];
+    /// Commits an operation at log index `op_idx`.
+    fn commit_op(&self, inner: &mut ReplicaInner<S, Op>, op_idx: usize) {
+        let op = &inner.log[op_idx];
         inner.state_machine.apply(op.clone());
         inner.commit_number += 1;
     }
