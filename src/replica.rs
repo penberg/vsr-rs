@@ -1,5 +1,5 @@
 use crate::message::Message;
-use crate::types::ReplicaID;
+use crate::types::{CommitID, OpNumber, ReplicaID, ViewNumber};
 use crossbeam_channel::Sender;
 use log::trace;
 use std::collections::HashMap;
@@ -40,11 +40,11 @@ where
 {
     state_machine: S,
     status: Status,
-    view_number: usize,
-    commit_number: usize,
-    op_number: usize,
+    view_number: ViewNumber,
+    commit_number: CommitID,
+    op_number: OpNumber,
     log: Vec<Op>,
-    acks: HashMap<usize, usize>,
+    acks: HashMap<ReplicaID, usize>,
 }
 
 impl<S, Op> ReplicaInner<S, Op> where Op: Clone + Debug + Send {}
