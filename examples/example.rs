@@ -28,7 +28,6 @@ fn main() {
         replica_tx.clone(),
     );
     let replicas = vec![replica_a, replica_b, replica_c];
-    let nr_replicas = replicas.len();
     std::thread::spawn(move || loop {
         let (replica_id, message) = replica_rx.recv().unwrap();
         let replica = &replicas[replica_id];
