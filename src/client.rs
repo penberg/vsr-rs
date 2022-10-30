@@ -12,10 +12,10 @@ pub struct Client<Op>
 where
     Op: Clone + Debug + Send,
 {
-    pub client_id: ClientID,
-    pub view_number: usize,
-    pub nr_replicas: usize,
-    pub message_bus: Sender<(usize, Message<Op>)>,
+    client_id: ClientID,
+    view_number: usize,
+    nr_replicas: usize,
+    message_bus: Sender<(usize, Message<Op>)>,
     inner: Mutex<ClientInner>,
 }
 
