@@ -3,9 +3,9 @@ use crate::types::{ClientID, RequestNumber};
 use crossbeam_channel::Sender;
 use log::trace;
 use std::fmt::Debug;
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex};
 
-pub type ClientCallback = fn(RequestNumber);
+pub type ClientCallback = Box<dyn Fn(RequestNumber) + Send>;
 
 /// Client.
 pub struct Client<Op>
@@ -42,6 +42,23 @@ where
             nr_replicas,
             message_bus,
             inner,
+        }
+    }
+
+    pub fn request_sync(&self, op: Op) {
+        let pair = Arc::new((Mutex::new(false), Condvar::new()));
+        let pair_ = Arc::clone(&pair);
+        let callback = move |_| {
+            let (lock, cvar) = &*pair_;
+            let mut completed = lock.lock().unwrap();
+            *completed = true;
+            cvar.notify_one();
+        };
+        self.request(op, Box::new(callback));
+        let (lock, cvar) = &*pair;
+        let mut completed = lock.lock().unwrap();
+        while !*completed {
+            completed = cvar.wait(completed).unwrap();
         }
     }
 

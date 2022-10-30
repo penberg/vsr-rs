@@ -29,32 +29,27 @@ fn main() {
     );
     let replicas = vec![replica_a, replica_b, replica_c];
     let nr_replicas = replicas.len();
-    let replica_event_loop = std::thread::spawn(move || loop {
+    std::thread::spawn(move || loop {
         let (replica_id, message) = replica_rx.recv().unwrap();
         let replica = &replicas[replica_id];
         replica.on_message(message);
     });
     let client = Arc::new(Client::new(nr_replicas, replica_tx.clone()));
     let client_ = client.clone();
-    let client_event_loop = std::thread::spawn(move || loop {
+    std::thread::spawn(move || loop {
         let _ = client_rx.recv().unwrap();
         client_.on_message();
     });
-    let callback = |request_number| {
-        println!("Request {} completed", request_number);
-    };
-    client.request(CalculatorOperation::Add(10), callback);
-    // client.request(CalculatorOperation::Rem(5));
-    // client.request(CalculatorOperation::Add(7));
-    // client.request(CalculatorOperation::Add(8));
-    replica_event_loop.join().unwrap();
-    client_event_loop.join().unwrap();
+    client.request_sync(CalculatorOperation::Add(10));
+    client.request_sync(CalculatorOperation::Rem(5));
+    client.request_sync(CalculatorOperation::Add(7));
+    client.request_sync(CalculatorOperation::Add(8));
 }
 
 #[derive(Clone, Debug)]
 enum CalculatorOperation {
     Add(i32),
-    // Rem(i32),
+    Rem(i32),
 }
 
 struct CalculatorStateMachine {}
