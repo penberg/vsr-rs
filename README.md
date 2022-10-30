@@ -4,7 +4,15 @@ This is a _work-in-progress_ Rust implementation of the Viewstamped Replication 
 
 ## Getting Started
 
+Run the example:
+
+```console
+cargo run --example example
 ```
+
+To see some debug traces, use `RUST_LOG` environment variable:
+
+```console
 RUST_LOG=trace cargo run --example example
 ```
 
