@@ -45,7 +45,7 @@ where
         }
     }
 
-    pub fn request_sync(&self, op: Op) -> RequestNumber {
+    pub fn request(&self, op: Op) -> RequestNumber {
         let pair = Arc::new((Mutex::new(None), Condvar::new()));
         let pair_ = Arc::clone(&pair);
         let callback = move |request_number| {
@@ -54,7 +54,7 @@ where
             *completed = Some(request_number);
             cvar.notify_one();
         };
-        self.request(op, Box::new(callback));
+        self.request_async(op, Box::new(callback));
         let (lock, cvar) = &*pair;
         let mut completed = lock.lock().unwrap();
         loop {
@@ -65,7 +65,7 @@ where
         }
     }
 
-    pub fn request(&self, op: Op, callback: ClientCallback) {
+    pub fn request_async(&self, op: Op, callback: ClientCallback) {
         trace!("Client {} <- {:?}", self.client_id, op);
         let primary_id = self.view_number % self.nr_replicas;
         let mut inner = self.inner.lock().unwrap();

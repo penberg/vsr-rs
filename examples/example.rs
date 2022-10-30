@@ -40,10 +40,10 @@ fn main() {
         let _ = client_rx.recv().unwrap();
         client_.on_message();
     });
-    client.request_sync(CalculatorOperation::Add(10));
-    client.request_sync(CalculatorOperation::Rem(5));
-    client.request_sync(CalculatorOperation::Add(7));
-    client.request_sync(CalculatorOperation::Add(8));
+    client.request(CalculatorOperation::Add(10));
+    client.request(CalculatorOperation::Rem(5));
+    client.request(CalculatorOperation::Add(7));
+    client.request(CalculatorOperation::Add(8));
 }
 
 #[derive(Clone, Debug)]
