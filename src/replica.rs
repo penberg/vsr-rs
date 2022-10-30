@@ -4,7 +4,7 @@ use crossbeam_channel::Sender;
 use log::trace;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Replica status.
 #[derive(Debug, PartialEq)]
@@ -38,7 +38,7 @@ struct ReplicaInner<S, Op>
 where
     Op: Clone + Debug + Send,
 {
-    state_machine: S,
+    state_machine: Arc<S>,
     status: Status,
     view_number: ViewNumber,
     commit_number: CommitID,
@@ -57,7 +57,7 @@ where
     pub fn new(
         self_id: ReplicaID,
         nr_replicas: usize,
-        state_machine: S,
+        state_machine: Arc<S>,
         client_tx: Sender<()>,
         replica_tx: Sender<(ReplicaID, Message<Op>)>,
     ) -> Replica<S, Op> {

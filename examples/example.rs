@@ -9,21 +9,21 @@ fn main() {
     let replica_a = Replica::new(
         0,
         nr_replicas,
-        CalculatorStateMachine {},
+        Arc::new(Accumulator {}),
         client_tx.clone(),
         replica_tx.clone(),
     );
     let replica_b = Replica::new(
         1,
         nr_replicas,
-        CalculatorStateMachine {},
+        Arc::new(Accumulator {}),
         client_tx.clone(),
         replica_tx.clone(),
     );
     let replica_c = Replica::new(
         2,
         nr_replicas,
-        CalculatorStateMachine {},
+        Arc::new(Accumulator {}),
         client_tx.clone(),
         replica_tx.clone(),
     );
@@ -39,22 +39,22 @@ fn main() {
         let _ = client_rx.recv().unwrap();
         client_.on_message();
     });
-    client.request(CalculatorOperation::Add(10));
-    client.request(CalculatorOperation::Rem(5));
-    client.request(CalculatorOperation::Add(7));
-    client.request(CalculatorOperation::Add(8));
+    client.request(Op::Add(10));
+    client.request(Op::Sub(5));
+    client.request(Op::Add(7));
+    client.request(Op::Add(8));
 }
 
 #[derive(Clone, Debug)]
-enum CalculatorOperation {
+enum Op {
     Add(i32),
-    Rem(i32),
+    Sub(i32),
 }
 
-struct CalculatorStateMachine {}
+struct Accumulator {}
 
-impl StateMachine<CalculatorOperation> for CalculatorStateMachine {
-    fn apply(&self, op: CalculatorOperation) {
+impl StateMachine<Op> for Accumulator {
+    fn apply(&self, op: Op) {
         println!("Applying {:?}", op);
     }
 }
