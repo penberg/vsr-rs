@@ -15,7 +15,7 @@ enum Status {
 /// State machine.
 pub trait StateMachine<Op>
 where
-    Op: Clone + Debug + Send + Sync,
+    Op: Clone + Debug + Send,
 {
     fn apply(&self, op: Op);
 }
@@ -24,7 +24,7 @@ where
 pub struct Replica<S, Op>
 where
     S: StateMachine<Op>,
-    Op: Clone + Debug + Send + Sync,
+    Op: Clone + Debug + Send,
 {
     self_id: ReplicaID,
     nr_replicas: usize,
@@ -36,7 +36,7 @@ where
 #[derive(Debug)]
 struct ReplicaInner<S, Op>
 where
-    Op: Clone + Debug + Send + Sync,
+    Op: Clone + Debug + Send,
 {
     state_machine: S,
     status: Status,
@@ -47,12 +47,12 @@ where
     acks: HashMap<usize, usize>,
 }
 
-impl<S, Op> ReplicaInner<S, Op> where Op: Clone + Debug + Send + Sync {}
+impl<S, Op> ReplicaInner<S, Op> where Op: Clone + Debug + Send {}
 
 impl<S, Op> Replica<S, Op>
 where
     S: StateMachine<Op>,
-    Op: Clone + Debug + Send + Sync,
+    Op: Clone + Debug + Send,
 {
     pub fn new(
         self_id: ReplicaID,

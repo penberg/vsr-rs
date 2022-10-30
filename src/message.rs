@@ -4,7 +4,7 @@ use std::fmt::Debug;
 #[derive(Clone, Debug)]
 pub enum Message<Op>
 where
-    Op: Clone + Debug + Send + Sync,
+    Op: Clone + Debug + Send,
 {
     Request {
         client_id: ClientID,

@@ -10,7 +10,7 @@ pub type ClientCallback = fn(RequestNumber);
 /// Client.
 pub struct Client<Op>
 where
-    Op: Clone + Debug + Send + Sync,
+    Op: Clone + Debug + Send,
 {
     pub client_id: ClientID,
     pub view_number: usize,
@@ -26,7 +26,7 @@ struct ClientInner {
 
 impl<Op> Client<Op>
 where
-    Op: Clone + Debug + Send + Sync,
+    Op: Clone + Debug + Send,
 {
     pub fn new(nr_replicas: usize, message_bus: Sender<(usize, Message<Op>)>) -> Client<Op> {
         let request_number = 0;
