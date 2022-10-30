@@ -1,5 +1,5 @@
 use crate::message::Message;
-use crate::types::{ClientID, RequestNumber};
+use crate::types::{ClientID, ReplicaID, RequestNumber, ViewNumber};
 use crossbeam_channel::Sender;
 use log::trace;
 use std::fmt::Debug;
@@ -13,9 +13,9 @@ where
     Op: Clone + Debug + Send,
 {
     client_id: ClientID,
-    view_number: usize,
+    view_number: ViewNumber,
     nr_replicas: usize,
-    message_bus: Sender<(usize, Message<Op>)>,
+    replica_tx: Sender<(ReplicaID, Message<Op>)>,
     inner: Mutex<ClientInner>,
 }
 
@@ -28,7 +28,7 @@ impl<Op> Client<Op>
 where
     Op: Clone + Debug + Send,
 {
-    pub fn new(nr_replicas: usize, message_bus: Sender<(usize, Message<Op>)>) -> Client<Op> {
+    pub fn new(nr_replicas: usize, replica_tx: Sender<(ReplicaID, Message<Op>)>) -> Client<Op> {
         let request_number = 0;
         let callbacks = None;
         let inner = ClientInner {
@@ -40,7 +40,7 @@ where
             client_id: 0,
             view_number: 0,
             nr_replicas,
-            message_bus,
+            replica_tx,
             inner,
         }
     }
@@ -72,7 +72,7 @@ where
         let request_number = inner.request_number;
         inner.request_number += 1;
         inner.callbacks.replace((request_number, callback));
-        self.message_bus
+        self.replica_tx
             .send((
                 primary_id,
                 Message::Request {
