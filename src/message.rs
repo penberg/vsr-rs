@@ -1,4 +1,4 @@
-use crate::types::{ClientID, RequestNumber};
+use crate::types::{ClientID, CommitID, OpNumber, ReplicaID, RequestNumber, ViewNumber};
 use std::fmt::Debug;
 
 #[derive(Clone, Debug)]
@@ -20,5 +20,16 @@ where
     PrepareOk {
         view_number: usize,
         op_number: usize,
+    },
+    GetState {
+        replica_id: ReplicaID,
+        view_number: ViewNumber,
+        op_number: OpNumber,
+    },
+    NewState {
+        view_number: ViewNumber,
+        log: Vec<Op>,
+        op_number: OpNumber,
+        commit_number: CommitID,
     },
 }

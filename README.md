@@ -18,7 +18,8 @@ RUST_LOG=trace cargo run --example example
 
 ## ToDo
 
-* [x] Normal operation (mostly works)
+* [x] Normal operation
+* [ ] State transfer
 * [ ] Deterministic simulator
 * [ ] View changes 
 * [ ] Failed replica recovery

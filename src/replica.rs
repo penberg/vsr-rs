@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, PartialEq)]
 enum Status {
     Normal,
+    Recovery,
 }
 
 /// State machine.
@@ -116,8 +117,23 @@ where
                 commit_number,
             } => {
                 let mut inner = self.inner.lock().unwrap();
+                assert!(!self.is_primary(&inner));
                 // TODO: If view number is not the same, initiate recovery.
                 assert_eq!(inner.view_number, view_number);
+                if op_number > inner.op_number + 1 {
+                    inner.status = Status::Recovery;
+                    // FIXME: pick *one* replica, doesn't need to be primary.
+                    let primary_id = self.primary_id(&inner);
+                    self.send_msg(
+                        primary_id,
+                        Message::GetState {
+                            replica_id: self.self_id,
+                            view_number: inner.view_number,
+                            op_number: inner.op_number,
+                        },
+                    );
+                    return;
+                }
                 // TODO: If op number is not strictly consecutive, initiate recovery.
                 assert_eq!(inner.op_number + 1, op_number);
                 inner.op_number += 1;
@@ -148,6 +164,44 @@ where
                     self.commit_op(&mut inner, op_number - 1);
                     self.respond_to_client();
                 }
+            }
+            Message::GetState {
+                replica_id,
+                view_number,
+                op_number,
+            } => {
+                let inner = self.inner.lock().unwrap();
+                assert_eq!(inner.status, Status::Normal);
+                assert_eq!(inner.view_number, view_number);
+                self.send_msg(
+                    replica_id,
+                    Message::NewState {
+                        view_number: inner.view_number,
+                        log: inner.log[op_number..].to_vec(),
+                        op_number: inner.op_number,
+                        commit_number: inner.commit_number,
+                    },
+                );
+            }
+            Message::NewState {
+                view_number,
+                log,
+                op_number,
+                commit_number,
+            } => {
+                let mut inner = self.inner.lock().unwrap();
+                assert_eq!(inner.status, Status::Recovery);
+                assert_eq!(inner.view_number, view_number);
+                for op in log {
+                    inner.log.push(op);
+                    inner.op_number += 1;
+                }
+                for op_idx in inner.commit_number..commit_number {
+                    self.commit_op(&mut inner, op_idx);
+                }
+                assert_eq!(inner.op_number, op_number);
+                assert_eq!(inner.commit_number, commit_number);
+                inner.status = Status::Normal;
             }
         }
     }
