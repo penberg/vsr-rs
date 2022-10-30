@@ -143,13 +143,17 @@ where
                 let acks = inner.acks.get_mut(&op_number).unwrap();
                 *acks += 1;
                 if *acks == quorum(self.nr_replicas) {
-                    let op = &inner.log[op_number - 1];
-                    inner.state_machine.apply(op.clone());
-                    inner.commit_number += 1;
+                    self.commit_op(&mut inner, op_number);
                     self.client_tx.send(()).unwrap();
                 }
             }
         }
+    }
+
+    fn commit_op(&self, inner: &mut ReplicaInner<S, Op>, op_number: OpNumber) {
+        let op = &inner.log[op_number - 1];
+        inner.state_machine.apply(op.clone());
+        inner.commit_number += 1;
     }
 
     fn broadcast_allbutself(&self, message: Message<Op>) {
