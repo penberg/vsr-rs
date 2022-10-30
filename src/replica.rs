@@ -122,19 +122,18 @@ where
                 assert_eq!(inner.op_number + 1, op_number);
                 inner.op_number += 1;
                 inner.log.push(op);
-                let view_number = inner.view_number;
                 for op_idx in inner.commit_number..commit_number {
                     self.commit_op(&mut inner, op_idx);
                 }
-                self.replica_tx
-                    .send((
-                        self.primary_id(&inner),
-                        Message::PrepareOk {
-                            view_number,
-                            op_number,
-                        },
-                    ))
-                    .unwrap();
+                let view_number = inner.view_number;
+                let primary_id = self.primary_id(&inner);
+                self.send_msg(
+                    primary_id,
+                    Message::PrepareOk {
+                        view_number,
+                        op_number,
+                    },
+                );
             }
             Message::PrepareOk {
                 view_number,
@@ -147,7 +146,7 @@ where
                 *acks += 1;
                 if *acks == quorum(self.nr_replicas) {
                     self.commit_op(&mut inner, op_number - 1);
-                    self.client_tx.send(()).unwrap();
+                    self.respond_to_client();
                 }
             }
         }
@@ -171,6 +170,10 @@ where
 
     fn send_msg(&self, replica_id: ReplicaID, message: Message<Op>) {
         self.replica_tx.send((replica_id, message)).unwrap();
+    }
+
+    fn respond_to_client(&self) {
+        self.client_tx.send(()).unwrap();
     }
 
     fn is_primary(&self, inner: &ReplicaInner<S, Op>) -> bool {
