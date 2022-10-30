@@ -12,14 +12,14 @@ where
         op: Op,
     },
     Prepare {
-        view_number: usize,
+        view_number: ViewNumber,
         op: Op,
-        op_number: usize,
-        commit_number: usize,
+        op_number: OpNumber,
+        commit_number: CommitID,
     },
     PrepareOk {
-        view_number: usize,
-        op_number: usize,
+        view_number: ViewNumber,
+        op_number: OpNumber,
     },
     GetState {
         replica_id: ReplicaID,
