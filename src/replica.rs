@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::message::Message;
 use crate::types::{CommitID, OpNumber, ReplicaID, ViewNumber};
 use crossbeam_channel::Sender;
@@ -27,8 +28,8 @@ where
     S: StateMachine<Op>,
     Op: Clone + Debug + Send,
 {
+    config: Arc<Mutex<Config>>,
     self_id: ReplicaID,
-    nr_replicas: usize,
     inner: Mutex<ReplicaInner<S, Op>>,
     client_tx: Sender<()>,
     replica_tx: Sender<(ReplicaID, Message<Op>)>,
@@ -57,7 +58,7 @@ where
 {
     pub fn new(
         self_id: ReplicaID,
-        nr_replicas: usize,
+        config: Arc<Mutex<Config>>,
         state_machine: Arc<S>,
         client_tx: Sender<()>,
         replica_tx: Sender<(ReplicaID, Message<Op>)>,
@@ -80,7 +81,7 @@ where
         let inner = Mutex::new(inner);
         Replica {
             self_id,
-            nr_replicas,
+            config,
             client_tx,
             replica_tx,
             inner,
@@ -159,7 +160,7 @@ where
                 assert_eq!(inner.view_number, view_number);
                 let acks = inner.acks.get_mut(&op_number).unwrap();
                 *acks += 1;
-                if *acks == quorum(self.nr_replicas) {
+                if *acks == self.config.lock().unwrap().quorum() {
                     self.commit_op(&mut inner, op_number - 1);
                     self.respond_to_client();
                 }
@@ -213,7 +214,8 @@ where
     }
 
     fn broadcast_allbutself(&self, message: Message<Op>) {
-        for replica_id in 0..self.nr_replicas {
+        let replicas = self.config.lock().unwrap().replicas.clone();
+        for replica_id in replicas {
             if replica_id == self.self_id {
                 continue;
             }
@@ -234,10 +236,6 @@ where
     }
 
     fn primary_id(&self, inner: &ReplicaInner<S, Op>) -> ReplicaID {
-        inner.view_number & self.nr_replicas
+        self.config.lock().unwrap().primary_id(inner.view_number)
     }
-}
-
-fn quorum(nr_replicas: usize) -> usize {
-    nr_replicas / 2 + 1
 }

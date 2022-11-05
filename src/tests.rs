@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::{Client, Replica, StateMachine};
+    use crate::{Client, Config, Replica, StateMachine};
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -8,25 +8,28 @@ mod tests {
         let _ = env_logger::try_init();
         let (client_tx, _client_rx) = crossbeam_channel::unbounded();
         let (replica_tx, replica_rx) = crossbeam_channel::unbounded();
-        let nr_replicas = 3;
+        let config = Arc::new(Mutex::new(Config::new()));
         let sm = Arc::new(Accumulator::new());
+        let a_id = config.lock().unwrap().add_replica();
         let replica_a = Replica::new(
-            0,
-            nr_replicas,
+            a_id,
+            config.clone(),
             sm.clone(),
             client_tx.clone(),
             replica_tx.clone(),
         );
+        let b_id = config.lock().unwrap().add_replica();
         let replica_b = Replica::new(
-            1,
-            nr_replicas,
+            b_id,
+            config.clone(),
             Arc::new(Accumulator::new()),
             client_tx.clone(),
             replica_tx.clone(),
         );
+        let c_id = config.lock().unwrap().add_replica();
         let replica_c = Replica::new(
-            2,
-            nr_replicas,
+            c_id,
+            config.clone(),
             Arc::new(Accumulator::new()),
             client_tx.clone(),
             replica_tx.clone(),
@@ -38,7 +41,7 @@ mod tests {
                 replicas[replica_id].on_message(message);
             }
         };
-        let client = Client::new(nr_replicas, replica_tx.clone());
+        let client = Client::new(config, replica_tx.clone());
         client.request_async(Op::Add(10), Box::new(|_| {}));
         tick();
         let accumulator = (sm.accumulator.lock().unwrap()).to_owned();
@@ -54,25 +57,28 @@ mod tests {
         let _ = env_logger::try_init();
         let (client_tx, _client_rx) = crossbeam_channel::unbounded();
         let (replica_tx, replica_rx) = crossbeam_channel::unbounded();
-        let nr_replicas = 3;
+        let config = Arc::new(Mutex::new(Config::new()));
         let sm = Arc::new(Accumulator::new());
+        let a_id = config.lock().unwrap().add_replica();
         let replica_a = Replica::new(
-            0,
-            nr_replicas,
+            a_id,
+            config.clone(),
             sm.clone(),
             client_tx.clone(),
             replica_tx.clone(),
         );
+        let b_id = config.lock().unwrap().add_replica();
         let replica_b = Replica::new(
-            1,
-            nr_replicas,
+            b_id,
+            config.clone(),
             Arc::new(Accumulator::new()),
             client_tx.clone(),
             replica_tx.clone(),
         );
+        let c_id = config.lock().unwrap().add_replica();
         let replica_c = Replica::new(
-            2,
-            nr_replicas,
+            c_id,
+            config.clone(),
             Arc::new(Accumulator::new()),
             client_tx.clone(),
             replica_tx.clone(),
@@ -93,7 +99,7 @@ mod tests {
                 replicas[replica_id].on_message(message);
             }
         };
-        let client = Client::new(nr_replicas, replica_tx.clone());
+        let client = Client::new(config, replica_tx.clone());
         client.request_async(Op::Add(10), Box::new(|_| {}));
         tick_lossy();
         let accumulator = (sm.accumulator.lock().unwrap()).to_owned();

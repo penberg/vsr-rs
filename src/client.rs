@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::message::Message;
 use crate::types::{ClientID, ReplicaID, RequestNumber, ViewNumber};
 use crossbeam_channel::Sender;
@@ -12,9 +13,9 @@ pub struct Client<Op>
 where
     Op: Clone + Debug + Send,
 {
+    config: Arc<Mutex<Config>>,
     client_id: ClientID,
     view_number: ViewNumber,
-    nr_replicas: usize,
     replica_tx: Sender<(ReplicaID, Message<Op>)>,
     inner: Mutex<ClientInner>,
 }
@@ -28,7 +29,10 @@ impl<Op> Client<Op>
 where
     Op: Clone + Debug + Send,
 {
-    pub fn new(nr_replicas: usize, replica_tx: Sender<(ReplicaID, Message<Op>)>) -> Client<Op> {
+    pub fn new(
+        config: Arc<Mutex<Config>>,
+        replica_tx: Sender<(ReplicaID, Message<Op>)>,
+    ) -> Client<Op> {
         let request_number = 0;
         let callbacks = None;
         let inner = ClientInner {
@@ -37,9 +41,9 @@ where
         };
         let inner = Mutex::new(inner);
         Client {
+            config,
             client_id: 0,
             view_number: 0,
-            nr_replicas,
             replica_tx,
             inner,
         }
@@ -67,7 +71,7 @@ where
 
     pub fn request_async(&self, op: Op, callback: ClientCallback) {
         trace!("Client {} <- {:?}", self.client_id, op);
-        let primary_id = self.view_number % self.nr_replicas;
+        let primary_id = self.config.lock().unwrap().primary_id(self.view_number);
         let mut inner = self.inner.lock().unwrap();
         let request_number = inner.request_number;
         inner.request_number += 1;

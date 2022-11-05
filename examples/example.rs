@@ -1,28 +1,31 @@
-use std::sync::Arc;
-use vsr_rs::{Client, Replica, StateMachine};
+use std::sync::{Arc, Mutex};
+use vsr_rs::{Client, Config, Replica, StateMachine};
 
 fn main() {
     env_logger::init();
     let (client_tx, client_rx) = crossbeam_channel::unbounded();
     let (replica_tx, replica_rx) = crossbeam_channel::unbounded();
-    let nr_replicas = 3;
+    let config = Arc::new(Mutex::new(Config::new()));
+    let a_id = config.lock().unwrap().add_replica();
     let replica_a = Replica::new(
-        0,
-        nr_replicas,
+        a_id,
+        config.clone(),
         Arc::new(Accumulator {}),
         client_tx.clone(),
         replica_tx.clone(),
     );
+    let b_id = config.lock().unwrap().add_replica();
     let replica_b = Replica::new(
-        1,
-        nr_replicas,
+        b_id,
+        config.clone(),
         Arc::new(Accumulator {}),
         client_tx.clone(),
         replica_tx.clone(),
     );
+    let c_id = config.lock().unwrap().add_replica();
     let replica_c = Replica::new(
-        2,
-        nr_replicas,
+        c_id,
+        config.clone(),
         Arc::new(Accumulator {}),
         client_tx.clone(),
         replica_tx.clone(),
@@ -33,7 +36,7 @@ fn main() {
         let replica = &replicas[replica_id];
         replica.on_message(message);
     });
-    let client = Arc::new(Client::new(nr_replicas, replica_tx.clone()));
+    let client = Arc::new(Client::new(config, replica_tx.clone()));
     let client_ = client.clone();
     std::thread::spawn(move || loop {
         let _ = client_rx.recv().unwrap();
