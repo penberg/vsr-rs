@@ -21,6 +21,10 @@ where
         view_number: ViewNumber,
         op_number: OpNumber,
     },
+    Commit {
+        view_number: ViewNumber,
+        commit_number: CommitID,
+    },
     GetState {
         replica_id: ReplicaID,
         view_number: ViewNumber,

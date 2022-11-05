@@ -88,6 +88,20 @@ where
         }
     }
 
+    pub fn on_idle(&self) {
+        let inner = self.inner.lock().unwrap();
+        if !self.is_primary(&inner) {
+            return;
+        }
+        assert_eq!(inner.status, Status::Normal);
+        let view_number = inner.view_number;
+        let commit_number = inner.commit_number;
+        self.broadcast_allbutself(Message::Commit {
+            view_number,
+            commit_number,
+        });
+    }
+
     pub fn on_message(&self, message: Message<Op>) {
         trace!("Replica {} <- {:?}", self.self_id, message);
         match message {
@@ -164,6 +178,15 @@ where
                     self.commit_op(&mut inner, op_number - 1);
                     self.respond_to_client();
                 }
+            }
+            Message::Commit {
+                view_number,
+                commit_number,
+            } => {
+                let mut inner = self.inner.lock().unwrap();
+                assert_eq!(inner.status, Status::Normal);
+                assert_eq!(inner.view_number, view_number);
+                self.commit_op(&mut inner, commit_number - 1);
             }
             Message::GetState {
                 replica_id,
