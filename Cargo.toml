@@ -7,3 +7,7 @@ edition = "2021"
 crossbeam-channel = "0.5"
 env_logger = "0.9.1"
 log = "0.4.17"
+
+[dev-dependencies]
+rand = "0.8.5"
+rand_chacha = "0.3.1"
