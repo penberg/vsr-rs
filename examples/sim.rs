@@ -41,6 +41,11 @@ fn main() {
     );
     let replicas = vec![replica_a, replica_b, replica_c];
     let client = Arc::new(Client::new(config, replica_tx.clone()));
+    let idle = || {
+        for replica in &replicas {
+            replica.on_idle();
+        }
+    };
     let tick = || {
         while !replica_rx.is_empty() {
             let (replica_id, message) = replica_rx.recv().unwrap();
@@ -62,10 +67,14 @@ fn main() {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let oracle = Accumulator::new();
     for _ in 0..100000 {
-        let op = gen_op(&mut rng);
-        println!("Op {:?}", op);
-        oracle.apply(op.clone());
-        client.request_async(op, Box::new(|_| {}));
+        if gen_idle(&mut rng) {
+            idle();
+        } else {
+            let op = gen_op(&mut rng);
+            println!("Op {:?}", op);
+            oracle.apply(op.clone());
+            client.request_async(op, Box::new(|_| {}));
+        }
         if drop_message(&mut rng) {
             let id = rng.gen_range(1..3);
             tick_lossy(id);
@@ -92,6 +101,10 @@ fn gen_op(rng: &mut ChaCha8Rng) -> Op {
         1 => Op::Sub(value),
         _ => panic!("internal error"),
     }
+}
+
+fn gen_idle(rng: &mut ChaCha8Rng) -> bool {
+    rng.gen_range(0..100) > 95
 }
 
 fn drop_message(rng: &mut ChaCha8Rng) -> bool {

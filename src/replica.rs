@@ -136,17 +136,7 @@ where
                 // TODO: If view number is not the same, initiate recovery.
                 assert_eq!(inner.view_number, view_number);
                 if op_number > inner.op_number + 1 {
-                    inner.status = Status::Recovery;
-                    // FIXME: pick *one* replica, doesn't need to be primary.
-                    let primary_id = self.primary_id(&inner);
-                    self.send_msg(
-                        primary_id,
-                        Message::GetState {
-                            replica_id: self.self_id,
-                            view_number: inner.view_number,
-                            op_number: inner.op_number,
-                        },
-                    );
+                    self.state_transfer(&mut inner);
                     return;
                 }
                 assert_eq!(inner.op_number + 1, op_number);
@@ -186,7 +176,13 @@ where
                 let mut inner = self.inner.lock().unwrap();
                 assert_eq!(inner.status, Status::Normal);
                 assert_eq!(inner.view_number, view_number);
-                self.commit_op(&mut inner, commit_number - 1);
+                if commit_number > inner.op_number {
+                    self.state_transfer(&mut inner);
+                    return;
+                }
+                for op_idx in inner.commit_number..commit_number {
+                    self.commit_op(&mut inner, op_idx);
+                }
             }
             Message::GetState {
                 replica_id,
@@ -236,6 +232,20 @@ where
                 );
             }
         }
+    }
+
+    fn state_transfer(&self, inner: &mut ReplicaInner<S, Op>) {
+        inner.status = Status::Recovery;
+        // FIXME: pick *one* replica, doesn't need to be primary.
+        let primary_id = self.primary_id(&inner);
+        self.send_msg(
+            primary_id,
+            Message::GetState {
+                replica_id: self.self_id,
+                view_number: inner.view_number,
+                op_number: inner.op_number,
+            },
+        );
     }
 
     /// Commits an operation at log index `op_idx`.
