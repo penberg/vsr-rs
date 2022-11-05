@@ -202,6 +202,15 @@ where
                 assert_eq!(inner.op_number, op_number);
                 assert_eq!(inner.commit_number, commit_number);
                 inner.status = Status::Normal;
+                let view_number = inner.view_number;
+                let primary_id = self.primary_id(&inner);
+                self.send_msg(
+                    primary_id,
+                    Message::PrepareOk {
+                        view_number,
+                        op_number,
+                    },
+                );
             }
         }
     }
