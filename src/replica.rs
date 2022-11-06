@@ -111,8 +111,7 @@ where
                 assert!(self.is_primary(&inner));
                 // TODO: If not in normal status, drop request, advise client to try later.
                 assert_eq!(inner.status, Status::Normal);
-                inner.op_number += 1;
-                inner.log.push(op.clone());
+                self.append_to_log(&mut inner, op.clone());
                 let op_number = inner.op_number;
                 inner.acks.insert(op_number, 1);
                 // TODO: Update client_table
@@ -140,8 +139,7 @@ where
                     return;
                 }
                 assert_eq!(inner.op_number + 1, op_number);
-                inner.op_number += 1;
-                inner.log.push(op);
+                self.append_to_log(&mut inner, op);
                 for op_idx in inner.commit_number..commit_number {
                     self.commit_op(&mut inner, op_idx);
                 }
@@ -212,8 +210,7 @@ where
                 assert_eq!(inner.status, Status::Recovery);
                 assert_eq!(inner.view_number, view_number);
                 for op in log {
-                    inner.log.push(op);
-                    inner.op_number += 1;
+                    self.append_to_log(&mut inner, op);
                 }
                 for op_idx in inner.commit_number..commit_number {
                     self.commit_op(&mut inner, op_idx);
@@ -232,6 +229,11 @@ where
                 );
             }
         }
+    }
+
+    fn append_to_log(&self, inner: &mut ReplicaInner<S, Op>, op: Op) {
+        inner.log.push(op);
+        inner.op_number += 1;
     }
 
     fn state_transfer(&self, inner: &mut ReplicaInner<S, Op>) {
