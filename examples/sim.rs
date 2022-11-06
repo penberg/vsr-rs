@@ -1,3 +1,4 @@
+use log::debug;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use std::sync::{Arc, Mutex};
@@ -49,7 +50,7 @@ fn main() {
     let tick = || {
         while !replica_rx.is_empty() {
             let (replica_id, message) = replica_rx.recv().unwrap();
-            println!("Sending {:?} to {}", message, replica_id);
+            debug!("Sending {:?} to {}", message, replica_id);
             replicas[replica_id].on_message(message);
         }
     };
@@ -57,10 +58,10 @@ fn main() {
         while !replica_rx.is_empty() {
             let (replica_id, message) = replica_rx.recv().unwrap();
             if replica_id == to_drop_id {
-                println!("Dropping {:?} to {}", message, to_drop_id);
+                debug!("Dropping {:?} to {}", message, to_drop_id);
                 continue;
             }
-            println!("Sending {:?} to {}", message, replica_id);
+            debug!("Sending {:?} to {}", message, replica_id);
             replicas[replica_id].on_message(message);
         }
     };
@@ -71,7 +72,7 @@ fn main() {
             idle();
         } else {
             let op = gen_op(&mut rng);
-            println!("Op {:?}", op);
+            debug!("Op {:?}", op);
             oracle.apply(op.clone());
             client.request_async(op, Box::new(|_| {}));
         }
