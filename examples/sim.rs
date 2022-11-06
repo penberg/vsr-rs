@@ -1,7 +1,8 @@
 use log::debug;
+use parking_lot::Mutex;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vsr_rs::{Client, Config, Replica, StateMachine};
 
 fn main() {
@@ -15,7 +16,7 @@ fn main() {
     let (client_tx, _client_rx) = crossbeam_channel::unbounded();
     let (replica_tx, replica_rx) = crossbeam_channel::unbounded();
     let config = Arc::new(Mutex::new(Config::new()));
-    let a_id = config.lock().unwrap().add_replica();
+    let a_id = config.lock().add_replica();
     let sm_a = Arc::new(Accumulator::new());
     let replica_a = Replica::new(
         a_id,
@@ -24,7 +25,7 @@ fn main() {
         client_tx.clone(),
         replica_tx.clone(),
     );
-    let b_id = config.lock().unwrap().add_replica();
+    let b_id = config.lock().add_replica();
     let replica_b = Replica::new(
         b_id,
         config.clone(),
@@ -32,7 +33,7 @@ fn main() {
         client_tx.clone(),
         replica_tx.clone(),
     );
-    let c_id = config.lock().unwrap().add_replica();
+    let c_id = config.lock().add_replica();
     let replica_c = Replica::new(
         c_id,
         config.clone(),
@@ -82,8 +83,8 @@ fn main() {
         } else {
             tick();
         }
-        let oracle_acc = *oracle.accumulator.lock().unwrap();
-        let primary_acc = *(sm_a.accumulator.lock().unwrap());
+        let oracle_acc = *oracle.accumulator.lock();
+        let primary_acc = *(sm_a.accumulator.lock());
         assert_eq!(oracle_acc, primary_acc);
     }
 }
@@ -125,7 +126,7 @@ impl Accumulator {
 
 impl StateMachine<Op> for Accumulator {
     fn apply(&self, op: Op) {
-        let mut accumulator = self.accumulator.lock().unwrap();
+        let mut accumulator = self.accumulator.lock();
         match op {
             Op::Add(value) => {
                 *accumulator = accumulator.wrapping_add(value);

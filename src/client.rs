@@ -3,8 +3,9 @@ use crate::message::Message;
 use crate::types::{ClientID, ReplicaID, RequestNumber, ViewNumber};
 use crossbeam_channel::Sender;
 use log::trace;
+use parking_lot::{Condvar, Mutex};
 use std::fmt::Debug;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 
 pub type ClientCallback = Box<dyn Fn(RequestNumber) + Send>;
 
@@ -54,25 +55,25 @@ where
         let pair_ = Arc::clone(&pair);
         let callback = move |request_number| {
             let (lock, cvar) = &*pair_;
-            let mut completed = lock.lock().unwrap();
+            let mut completed = lock.lock();
             *completed = Some(request_number);
             cvar.notify_one();
         };
         self.request_async(op, Box::new(callback));
         let (lock, cvar) = &*pair;
-        let mut completed = lock.lock().unwrap();
+        let mut completed = lock.lock();
         loop {
             if let Some(request_number) = *completed {
                 return request_number;
             }
-            completed = cvar.wait(completed).unwrap();
+            cvar.wait(&mut completed);
         }
     }
 
     pub fn request_async(&self, op: Op, callback: ClientCallback) {
         trace!("Client {} <- {:?}", self.client_id, op);
-        let primary_id = self.config.lock().unwrap().primary_id(self.view_number);
-        let mut inner = self.inner.lock().unwrap();
+        let primary_id = self.config.lock().primary_id(self.view_number);
+        let mut inner = self.inner.lock();
         let request_number = inner.request_number;
         inner.request_number += 1;
         inner.callbacks.replace((request_number, callback));
@@ -89,7 +90,7 @@ where
     }
 
     pub fn on_message(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock();
         if let Some((request_number, callback)) = inner.callbacks.take() {
             callback(request_number);
         }

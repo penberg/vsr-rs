@@ -3,9 +3,10 @@ use crate::message::Message;
 use crate::types::{CommitID, OpNumber, ReplicaID, ViewNumber};
 use crossbeam_channel::Sender;
 use log::trace;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Replica status.
 #[derive(Debug, PartialEq)]
@@ -89,7 +90,7 @@ where
     }
 
     pub fn on_idle(&self) {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock();
         if !self.is_primary(&inner) {
             return;
         }
@@ -106,7 +107,7 @@ where
         trace!("Replica {} <- {:?}", self.self_id, message);
         match message {
             Message::Request { op, .. } => {
-                let mut inner = self.inner.lock().unwrap();
+                let mut inner = self.inner.lock();
                 // TODO: If not primary, drop request, advise client to connect to primary.
                 assert!(self.is_primary(&inner));
                 // TODO: If not in normal status, drop request, advise client to try later.
@@ -130,7 +131,7 @@ where
                 op_number,
                 commit_number,
             } => {
-                let mut inner = self.inner.lock().unwrap();
+                let mut inner = self.inner.lock();
                 assert!(!self.is_primary(&inner));
                 // TODO: If view number is not the same, initiate recovery.
                 assert_eq!(inner.view_number, view_number);
@@ -157,12 +158,12 @@ where
                 view_number,
                 op_number,
             } => {
-                let mut inner = self.inner.lock().unwrap();
+                let mut inner = self.inner.lock();
                 assert!(self.is_primary(&inner));
                 assert_eq!(inner.view_number, view_number);
                 let acks = inner.acks.get_mut(&op_number).unwrap();
                 *acks += 1;
-                if *acks == self.config.lock().unwrap().quorum() {
+                if *acks == self.config.lock().quorum() {
                     self.commit_op(&mut inner, op_number - 1);
                     self.respond_to_client();
                 }
@@ -171,7 +172,7 @@ where
                 view_number,
                 commit_number,
             } => {
-                let mut inner = self.inner.lock().unwrap();
+                let mut inner = self.inner.lock();
                 assert_eq!(inner.status, Status::Normal);
                 assert_eq!(inner.view_number, view_number);
                 if commit_number > inner.op_number {
@@ -187,7 +188,7 @@ where
                 view_number,
                 op_number,
             } => {
-                let inner = self.inner.lock().unwrap();
+                let inner = self.inner.lock();
                 assert_eq!(inner.status, Status::Normal);
                 assert_eq!(inner.view_number, view_number);
                 self.send_msg(
@@ -206,7 +207,7 @@ where
                 op_number,
                 commit_number,
             } => {
-                let mut inner = self.inner.lock().unwrap();
+                let mut inner = self.inner.lock();
                 assert_eq!(inner.status, Status::Recovery);
                 assert_eq!(inner.view_number, view_number);
                 for op in log {
@@ -258,7 +259,7 @@ where
     }
 
     fn broadcast_allbutself(&self, message: Message<Op>) {
-        let replicas = self.config.lock().unwrap().replicas.clone();
+        let replicas = self.config.lock().replicas.clone();
         for replica_id in replicas {
             if replica_id == self.self_id {
                 continue;
@@ -280,6 +281,6 @@ where
     }
 
     fn primary_id(&self, inner: &ReplicaInner<S, Op>) -> ReplicaID {
-        self.config.lock().unwrap().primary_id(inner.view_number)
+        self.config.lock().primary_id(inner.view_number)
     }
 }

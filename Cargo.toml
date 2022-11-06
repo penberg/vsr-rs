@@ -7,6 +7,7 @@ edition = "2021"
 crossbeam-channel = "0.5"
 env_logger = "0.9.1"
 log = "0.4.17"
+parking_lot = "0.12.1"
 
 [dev-dependencies]
 rand = "0.8.5"

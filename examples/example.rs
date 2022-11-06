@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use vsr_rs::{Client, Config, Replica, StateMachine};
 
 fn main() {
@@ -6,7 +7,7 @@ fn main() {
     let (client_tx, client_rx) = crossbeam_channel::unbounded();
     let (replica_tx, replica_rx) = crossbeam_channel::unbounded();
     let config = Arc::new(Mutex::new(Config::new()));
-    let a_id = config.lock().unwrap().add_replica();
+    let a_id = config.lock().add_replica();
     let replica_a = Replica::new(
         a_id,
         config.clone(),
@@ -14,7 +15,7 @@ fn main() {
         client_tx.clone(),
         replica_tx.clone(),
     );
-    let b_id = config.lock().unwrap().add_replica();
+    let b_id = config.lock().add_replica();
     let replica_b = Replica::new(
         b_id,
         config.clone(),
@@ -22,7 +23,7 @@ fn main() {
         client_tx.clone(),
         replica_tx.clone(),
     );
-    let c_id = config.lock().unwrap().add_replica();
+    let c_id = config.lock().add_replica();
     let replica_c = Replica::new(
         c_id,
         config.clone(),
