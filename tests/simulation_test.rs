@@ -56,7 +56,7 @@ fn test_simulation() {
             replicas[replica_id].on_message(message);
         }
     };
-    let tick_lossy = |to_drop_id| {
+    let tick_drop = |to_drop_id| {
         while !replica_rx.is_empty() {
             let (replica_id, message) = replica_rx.recv().unwrap();
             if replica_id == to_drop_id {
@@ -65,6 +65,17 @@ fn test_simulation() {
             }
             debug!("Sending {:?} to {}", message, replica_id);
             replicas[replica_id].on_message(message);
+        }
+    };
+    let tick_dup = |to_dup_id| {
+        while !replica_rx.is_empty() {
+            let (replica_id, message) = replica_rx.recv().unwrap();
+            debug!("Sending {:?} to {}", message, replica_id);
+            replicas[replica_id].on_message(message.clone());
+            if replica_id == to_dup_id {
+                debug!("Duplicating {:?} to {}", message, to_dup_id);
+                replicas[replica_id].on_message(message);
+            }
         }
     };
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
@@ -78,11 +89,18 @@ fn test_simulation() {
             oracle.apply(op.clone());
             client.request_async(op, Box::new(|_| {}));
         }
-        if drop_message(&mut rng) {
-            let id = rng.gen_range(1..3);
-            tick_lossy(id);
-        } else {
-            tick();
+        match gen_hardship(&mut rng) {
+            Hardship::None => {
+                tick();
+            }
+            Hardship::DropMsg => {
+                let id = rng.gen_range(1..3);
+                tick_drop(id);
+            }
+            Hardship::DupMsg => {
+                let id = rng.gen_range(1..3);
+                tick_dup(id);
+            }
         }
         let oracle_acc = *oracle.accumulator.lock();
         let primary_acc = *(sm_a.accumulator.lock());
@@ -110,8 +128,20 @@ fn gen_idle(rng: &mut ChaCha8Rng) -> bool {
     rng.gen_range(0..100) > 95
 }
 
-fn drop_message(rng: &mut ChaCha8Rng) -> bool {
-    rng.gen_range(0..2) == 1
+enum Hardship {
+    None,
+    DropMsg,
+    DupMsg,
+}
+
+fn gen_hardship(rng: &mut ChaCha8Rng) -> Hardship {
+    let hardship = rng.gen_range(0..3);
+    match hardship {
+        0 => Hardship::None,
+        1 => Hardship::DropMsg,
+        2 => Hardship::DupMsg,
+        _ => panic!("internal error"),
+    }
 }
 
 struct Accumulator {
