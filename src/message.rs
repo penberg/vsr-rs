@@ -30,10 +30,23 @@ where
         view_number: ViewNumber,
         op_number: OpNumber,
     },
+    /// The NewState message is sent to a replica to repair it.
+    /// 
+    /// We differ from the paper by not just sending the op number of the last
+    /// entry in the log, but also the op number of the first entry. This allows
+    /// us to verify that we're repairing the right part of the log in the
+    /// replica.
     NewState {
+        /// The view number of the replica that is sending the NewState message.
         view_number: ViewNumber,
+        /// The log of operations that this replica needs to apply to catch up.
         log: Vec<Op>,
-        op_number: OpNumber,
+        /// The op number of the first entry in the log. This is the op number
+        /// that we requested in the GetState message.
+        op_number_start: OpNumber,
+        /// The op number of the last entry in the log.
+        op_number_end: OpNumber,
+        /// The commit ID of the replica that is sending the NewState message.
         commit_number: CommitID,
     },
 }

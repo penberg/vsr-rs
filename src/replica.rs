@@ -139,10 +139,11 @@ where
             Message::NewState {
                 view_number,
                 log,
-                op_number,
+                op_number_start,
+                op_number_end,
                 commit_number,
             } => {
-                self.on_new_state(view_number, log, op_number, commit_number);
+                self.on_new_state(view_number, log, op_number_start, op_number_end, commit_number);
             }
         }
     }
@@ -241,7 +242,8 @@ where
             Message::NewState {
                 view_number: inner.view_number,
                 log: inner.log[op_number..].to_vec(),
-                op_number: inner.op_number,
+                op_number_start: op_number,
+                op_number_end: inner.op_number,
                 commit_number: inner.commit_number,
             },
         );
@@ -251,22 +253,24 @@ where
         &self,
         view_number: ViewNumber,
         log: Vec<Op>,
-        op_number: OpNumber,
+        op_number_start: OpNumber,
+        op_number_end: OpNumber,
         commit_number: CommitID,
     ) {
         let mut inner = self.inner.lock();
-        if op_number <= inner.op_number {
-            return; // duplicate
+        if inner.status != Status::Recovery {
+            return;
         }
         assert_eq!(inner.status, Status::Recovery);
         assert_eq!(inner.view_number, view_number);
+        assert_eq!(op_number_start, inner.op_number);
         for op in log {
             self.append_to_log(&mut inner, op);
         }
         for op_idx in inner.commit_number..commit_number {
             self.commit_op(&mut inner, op_idx);
         }
-        assert_eq!(inner.op_number, op_number);
+        assert_eq!(inner.op_number, op_number_end);
         assert_eq!(inner.commit_number, commit_number);
         inner.status = Status::Normal;
         let view_number = inner.view_number;
@@ -275,7 +279,7 @@ where
             primary_id,
             Message::PrepareOk {
                 view_number,
-                op_number,
+                op_number: op_number_end,
             },
         );
     }
