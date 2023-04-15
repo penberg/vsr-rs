@@ -63,5 +63,6 @@ The `vsr-rs` library does not yet implement recovery or view changes so the bugs
 
 For more information on VSR, please also check out the following presentations and blog posts:
 
+* [Paper: VR Revisited - An analysis with TLA+](https://jack-vanlightly.com/analyses/2022/12/20/vr-revisited-an-analysis-with-tlaplus)
 * [Reading Group: Viewstamped Replication Revisited](http://charap.co/reading-group-viewstamped-replication-revisited/)
 * [Viewstamped Replication explained](https://blog.brunobonacci.com/2018/07/15/viewstamped-replication-explained/)
