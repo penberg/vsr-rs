@@ -16,6 +16,12 @@ To see some debug traces, use `RUST_LOG` environment variable:
 RUST_LOG=trace cargo run --example example
 ```
 
+You can get a test coverage report with:
+
+```console
+cargo tarpaulin -o html
+```
+
 ## ToDo
 
 * [x] Normal operation
