@@ -10,8 +10,8 @@ fn test_simulation() {
     let seed = match std::env::var("SEED") {
         Ok(seed) => seed.parse::<u64>().unwrap(),
         Err(_) => rand::thread_rng().next_u64(),
-    };    
-    
+    };
+
     println!("Seed: {}", seed);
     env_logger::init();
     let (client_tx, _client_rx) = crossbeam_channel::unbounded();

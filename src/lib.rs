@@ -90,13 +90,7 @@ mod tests {
         );
         let sm_c = Arc::new(Accumulator::new());
         let c_id = config.lock().add_replica();
-        let replica_c = Replica::new(
-            c_id,
-            config.clone(),
-            sm_c,
-            client_tx,
-            replica_tx.clone(),
-        );
+        let replica_c = Replica::new(c_id, config.clone(), sm_c, client_tx, replica_tx.clone());
         let replicas = vec![replica_a, replica_b, replica_c];
         let tick = || {
             while !replica_rx.is_empty() {
