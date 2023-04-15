@@ -97,7 +97,7 @@ where
         assert_eq!(inner.status, Status::Normal);
         let view_number = inner.view_number;
         let commit_number = inner.commit_number;
-        self.broadcast_allbutself(Message::Commit {
+        self.send_msg_to_others(Message::Commit {
             view_number,
             commit_number,
         });
@@ -118,7 +118,7 @@ where
                 // TODO: Update client_table
                 let view_number = inner.view_number;
                 let commit_number = inner.commit_number;
-                self.broadcast_allbutself(Message::Prepare {
+                self.send_msg_to_others(Message::Prepare {
                     view_number,
                     op,
                     op_number,
@@ -270,7 +270,8 @@ where
         inner.commit_number += 1;
     }
 
-    fn broadcast_allbutself(&self, message: Message<Op>) {
+    /// Sends a message to all other replicas.
+    fn send_msg_to_others(&self, message: Message<Op>) {
         let replicas = self.config.lock().replicas.clone();
         for replica_id in replicas {
             if replica_id == self.self_id {
