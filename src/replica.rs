@@ -212,12 +212,19 @@ where
         );
     }
 
+    // Replicas send `PrepareOk` messages to the primary to acknowledge that
+    // they have appended an op to their logs. When the primary has
+    // received `PrepareOk` messages from a quorum of replicas, it commits
+    // the operation and replies to the client.
     fn on_prepare_ok(&self, view_number: ViewNumber, op_number: OpNumber) {
         let mut inner = self.inner.lock();
         assert!(self.is_primary(&inner));
         assert_eq!(inner.view_number, view_number);
+        // Register the acknowledgement
         let acks = inner.acks.get_mut(&op_number).unwrap();
         *acks += 1;
+        // If we have received a quorum of `PrepareOk` messages, commit the
+        // operation and reply to the client.
         if *acks == self.config.lock().quorum() {
             self.commit_op(&mut inner, op_number - 1);
             self.respond_to_client();
