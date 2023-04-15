@@ -39,11 +39,11 @@ fn test_simulation() {
         c_id,
         config.clone(),
         Arc::new(Accumulator::new()),
-        client_tx.clone(),
+        client_tx,
         replica_tx.clone(),
     );
     let replicas = vec![replica_a, replica_b, replica_c];
-    let client = Arc::new(Client::new(config, replica_tx.clone()));
+    let client = Arc::new(Client::new(config, replica_tx));
     let idle = || {
         for replica in &replicas {
             replica.on_idle();

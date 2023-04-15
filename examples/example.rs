@@ -28,7 +28,7 @@ fn main() {
         c_id,
         config.clone(),
         Arc::new(Accumulator {}),
-        client_tx.clone(),
+        client_tx,
         replica_tx.clone(),
     );
     let replicas = vec![replica_a, replica_b, replica_c];
@@ -37,10 +37,10 @@ fn main() {
         let replica = &replicas[replica_id];
         replica.on_message(message);
     });
-    let client = Arc::new(Client::new(config, replica_tx.clone()));
+    let client = Arc::new(Client::new(config, replica_tx));
     let client_ = client.clone();
     std::thread::spawn(move || loop {
-        let _ = client_rx.recv().unwrap();
+        client_rx.recv().unwrap();
         client_.on_message();
     });
     client.request(Op::Add(10));

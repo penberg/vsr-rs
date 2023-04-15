@@ -240,7 +240,7 @@ where
     fn state_transfer(&self, inner: &mut ReplicaInner<S, Op>) {
         inner.status = Status::Recovery;
         // FIXME: pick *one* replica, doesn't need to be primary.
-        let primary_id = self.primary_id(&inner);
+        let primary_id = self.primary_id(inner);
         self.send_msg(
             primary_id,
             Message::GetState {
