@@ -168,6 +168,11 @@ where
         });
     }
 
+    // The primary sends a `Prepare` message to replicate an operation.
+    // The replicas that receive the message will reply with `PrepareOk` when
+    // they have appended `op` to their logs. The message also contains the
+    // commit number of the primary, so that the replicas can commit their
+    // logs up to that point.
     fn on_prepare(
         &self,
         view_number: ViewNumber,
@@ -179,6 +184,7 @@ where
         assert!(!self.is_primary(&inner));
         // TODO: If view number is not the same, initiate recovery.
         assert_eq!(inner.view_number, view_number);
+        // If we fell behind in the log, initiate state transfer.
         if op_number > inner.op_number + 1 {
             self.state_transfer(&mut inner);
             return;
@@ -187,12 +193,16 @@ where
             return; // duplicate
         }
         assert_eq!(inner.op_number + 1, op_number);
+        // Append op to our log.
         self.append_to_log(&mut inner, op);
+        // Commit the log up to the commit number received in `Prepare`
+        // message, which represents the committed state of the primary.
         for op_idx in inner.commit_number..commit_number {
             self.commit_op(&mut inner, op_idx);
         }
-        let view_number = inner.view_number;
+        // Acknowledge the `Prepare` message to the primary. 
         let primary_id = self.primary_id(&inner);
+        let view_number = inner.view_number;
         self.send_msg(
             primary_id,
             Message::PrepareOk {
