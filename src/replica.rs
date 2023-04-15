@@ -139,6 +139,9 @@ where
                     self.state_transfer(&mut inner);
                     return;
                 }
+                if op_number <= inner.op_number {
+                    return; // duplicate
+                }
                 assert_eq!(inner.op_number + 1, op_number);
                 self.append_to_log(&mut inner, op);
                 for op_idx in inner.commit_number..commit_number {
@@ -173,6 +176,12 @@ where
                 commit_number,
             } => {
                 let mut inner = self.inner.lock();
+                if inner.status != Status::Normal {
+                    return;
+                }
+                if view_number < inner.view_number {
+                    return;
+                } 
                 assert_eq!(inner.status, Status::Normal);
                 assert_eq!(inner.view_number, view_number);
                 if commit_number > inner.op_number {
@@ -208,6 +217,9 @@ where
                 commit_number,
             } => {
                 let mut inner = self.inner.lock();
+                if op_number <= inner.op_number {
+                    return; // duplicate
+                }
                 assert_eq!(inner.status, Status::Recovery);
                 assert_eq!(inner.view_number, view_number);
                 for op in log {
