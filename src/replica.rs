@@ -185,15 +185,11 @@ where
             self.commit_op(op_idx);
         }
         // Acknowledge the `Prepare` message to the primary.
-        let primary_id = self.primary_id();
         let view_number = self.view_number;
-        self.send_msg(
-            primary_id,
-            Message::PrepareOk {
-                view_number,
-                op_number,
-            },
-        );
+        self.send_msg_to_primary(Message::PrepareOk {
+            view_number,
+            op_number,
+        });
     }
 
     // Replicas send `PrepareOk` messages to the primary to acknowledge that
@@ -273,14 +269,10 @@ where
         assert_eq!(self.commit_number(), commit_number);
         self.status.replace(Status::Normal);
         let view_number = self.view_number;
-        let primary_id = self.primary_id();
-        self.send_msg(
-            primary_id,
-            Message::PrepareOk {
-                view_number,
-                op_number: op_number_end,
-            },
-        );
+        self.send_msg_to_primary(Message::PrepareOk {
+            view_number,
+            op_number: op_number_end,
+        });
     }
 
     pub fn on_idle(&self) {
@@ -322,6 +314,12 @@ where
         let op = &log[op_idx];
         self.state_machine.apply(op.clone());
         self.commit_number.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Sends a message to the primary.
+    fn send_msg_to_primary(&self, message: Message<Op>) {
+        let primary_id = self.primary_id();
+        self.send_msg(primary_id, message);
     }
 
     /// Sends a message to all other replicas.
