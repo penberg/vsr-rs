@@ -185,7 +185,6 @@ where
             self.commit_op(op_idx);
         }
         // Acknowledge the `Prepare` message to the primary.
-        let view_number = self.view_number;
         self.send_msg_to_primary(Message::PrepareOk {
             view_number,
             op_number,
