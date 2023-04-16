@@ -76,6 +76,7 @@ where
         }
     }
 
+    /// The main entry point to replica logic.
     pub fn on_message(&self, message: Message<Op>) {
         trace!("Replica {} <- {:?}", self.self_id, message);
         match message {
@@ -127,16 +128,21 @@ where
         }
     }
 
+    /// The client sends a `Request` message to the primary, which replicates
+    /// the operation to the other replicas.
     fn on_request(&self, op: Op) {
         // TODO: If not primary, drop request, advise client to connect to primary.
         assert!(self.is_primary());
         // TODO: If not in normal status, drop request, advise client to try later.
         assert_eq!(*self.status.borrow(), Status::Normal);
+        // Append operation to our log.
         self.append_to_log(op.clone());
+        // And then register our own acknowledgement.
         let op_number = self.op_number();
         let mut acks = self.acks.borrow_mut();
         acks.insert(op_number, 1);
         // TODO: Update client_table
+        // Send a prepare message to all the replicas.
         let view_number = self.view_number;
         let commit_number = self.commit_number();
         self.send_msg_to_others(Message::Prepare {
