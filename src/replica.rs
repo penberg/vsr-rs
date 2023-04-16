@@ -76,19 +76,6 @@ where
         }
     }
 
-    pub fn on_idle(&self) {
-        if !self.is_primary() {
-            return;
-        }
-        assert_eq!(*self.status.borrow(), Status::Normal);
-        let view_number = self.view_number;
-        let commit_number = self.commit_number();
-        self.send_msg_to_others(Message::Commit {
-            view_number,
-            commit_number,
-        });
-    }
-
     pub fn on_message(&self, message: Message<Op>) {
         trace!("Replica {} <- {:?}", self.self_id, message);
         match message {
@@ -288,6 +275,19 @@ where
                 op_number: op_number_end,
             },
         );
+    }
+
+    pub fn on_idle(&self) {
+        if !self.is_primary() {
+            return;
+        }
+        assert_eq!(*self.status.borrow(), Status::Normal);
+        let view_number = self.view_number;
+        let commit_number = self.commit_number();
+        self.send_msg_to_others(Message::Commit {
+            view_number,
+            commit_number,
+        });
     }
 
     fn append_to_log(&self, op: Op) {
