@@ -16,8 +16,8 @@ fn test_simulation() {
     env_logger::init();
     let (client_tx, _client_rx) = crossbeam_channel::unbounded();
     let (replica_tx, replica_rx) = crossbeam_channel::unbounded();
-    let config = Arc::new(Mutex::new(Config::new()));
-    let a_id = config.lock().add_replica();
+    let config = Arc::new(Config::new());
+    let a_id = config.add_replica();
     let sm_a = Arc::new(Accumulator::new());
     let replica_a = Replica::new(
         a_id,
@@ -26,7 +26,7 @@ fn test_simulation() {
         client_tx.clone(),
         replica_tx.clone(),
     );
-    let b_id = config.lock().add_replica();
+    let b_id = config.add_replica();
     let replica_b = Replica::new(
         b_id,
         config.clone(),
@@ -34,7 +34,7 @@ fn test_simulation() {
         client_tx.clone(),
         replica_tx.clone(),
     );
-    let c_id = config.lock().add_replica();
+    let c_id = config.add_replica();
     let replica_c = Replica::new(
         c_id,
         config.clone(),
@@ -87,7 +87,7 @@ fn test_simulation() {
             let op = gen_op(&mut rng);
             debug!("Op {:?}", op);
             oracle.apply(op.clone());
-            client.request_async(op, Box::new(|_| {}));
+            client.on_request(op, Box::new(|_| {}));
         }
         match gen_hardship(&mut rng) {
             Hardship::None => {

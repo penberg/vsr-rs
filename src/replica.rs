@@ -29,7 +29,7 @@ where
     S: StateMachine<Op>,
     Op: Clone + Debug + Send,
 {
-    config: Arc<Mutex<Config>>,
+    config: Arc<Config>,
     self_id: ReplicaID,
     inner: Mutex<ReplicaInner<S, Op>>,
     client_tx: Sender<()>,
@@ -59,7 +59,7 @@ where
 {
     pub fn new(
         self_id: ReplicaID,
-        config: Arc<Mutex<Config>>,
+        config: Arc<Config>,
         state_machine: Arc<S>,
         client_tx: Sender<()>,
         replica_tx: Sender<(ReplicaID, Message<Op>)>,
@@ -143,7 +143,13 @@ where
                 op_number_end,
                 commit_number,
             } => {
-                self.on_new_state(view_number, log, op_number_start, op_number_end, commit_number);
+                self.on_new_state(
+                    view_number,
+                    log,
+                    op_number_start,
+                    op_number_end,
+                    commit_number,
+                );
             }
         }
     }
@@ -200,7 +206,7 @@ where
         for op_idx in inner.commit_number..commit_number {
             self.commit_op(&mut inner, op_idx);
         }
-        // Acknowledge the `Prepare` message to the primary. 
+        // Acknowledge the `Prepare` message to the primary.
         let primary_id = self.primary_id(&inner);
         let view_number = inner.view_number;
         self.send_msg(
@@ -225,7 +231,7 @@ where
         *acks += 1;
         // If we have received a quorum of `PrepareOk` messages, commit the
         // operation and reply to the client.
-        if *acks == self.config.lock().quorum() {
+        if *acks == self.config.quorum() {
             self.commit_op(&mut inner, op_number - 1);
             self.respond_to_client();
         }
@@ -329,12 +335,12 @@ where
 
     /// Sends a message to all other replicas.
     fn send_msg_to_others(&self, message: Message<Op>) {
-        let replicas = self.config.lock().replicas.clone();
-        for replica_id in replicas {
-            if replica_id == self.self_id {
+        let replicas = self.config.replicas.borrow();
+        for replica_id in replicas.iter() {
+            if *replica_id == self.self_id {
                 continue;
             }
-            self.send_msg(replica_id, message.clone());
+            self.send_msg(*replica_id, message.clone());
         }
     }
 
@@ -351,6 +357,6 @@ where
     }
 
     fn primary_id(&self, inner: &ReplicaInner<S, Op>) -> ReplicaID {
-        self.config.lock().primary_id(inner.view_number)
+        self.config.primary_id(inner.view_number)
     }
 }

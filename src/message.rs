@@ -31,7 +31,7 @@ where
         op_number: OpNumber,
     },
     /// The NewState message is sent to a replica to repair it.
-    /// 
+    ///
     /// We differ from the paper by not just sending the op number of the last
     /// entry in the log, but also the op number of the first entry. This allows
     /// us to verify that we're repairing the right part of the log in the

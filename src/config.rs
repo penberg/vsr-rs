@@ -1,30 +1,35 @@
+use std::cell::RefCell;
+
 use crate::types::{ReplicaID, ViewNumber};
 
 /// Configuration.
 #[derive(Debug, Default)]
 pub struct Config {
     /// IDs of all replicas (in sorted order).
-    pub replicas: Vec<ReplicaID>,
+    pub replicas: RefCell<Vec<ReplicaID>>,
 }
 
 impl Config {
     pub fn new() -> Config {
-        let replicas = Vec::default();
+        let replicas = RefCell::new(Vec::default());
         Config { replicas }
     }
 
     pub fn primary_id(&self, view_number: ViewNumber) -> ReplicaID {
-        let idx = view_number % self.replicas.len();
-        self.replicas[idx]
+        let replicas = self.replicas.borrow();
+        let idx = view_number % replicas.len();
+        replicas[idx]
     }
 
-    pub fn add_replica(&mut self) -> usize {
-        let id = self.replicas.len();
-        self.replicas.push(id);
+    pub fn add_replica(&self) -> usize {
+        let mut replicas = self.replicas.borrow_mut();
+        let id = replicas.len();
+        replicas.push(id);
         id
     }
 
     pub fn quorum(&self) -> usize {
-        self.replicas.len() / 2 + 1
+        let replicas = self.replicas.borrow();
+        replicas.len() / 2 + 1
     }
 }
