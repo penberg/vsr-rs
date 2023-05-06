@@ -49,4 +49,20 @@ where
         /// The commit ID of the replica that is sending the NewState message.
         commit_number: CommitID,
     },
+    StartViewChange {
+        view_number: ViewNumber,
+        replica_id: ReplicaID,
+    },
+    DoViewChange {
+        view_number: ViewNumber,
+        replica_id: ReplicaID,
+        log: Vec<Op>,
+        commit_number: CommitID,
+    },
+    StartView {
+        view_number: ViewNumber,
+        replica_id: ReplicaID,
+        log: Vec<Op>,
+        commit_number: CommitID,
+    },
 }
