@@ -57,7 +57,10 @@ enum Op {
 
 struct Accumulator {}
 
-impl StateMachine<Op> for Accumulator {
+impl StateMachine for Accumulator {
+    type Input = Op;
+    type Output = ();
+
     fn apply(&self, op: Op) {
         println!("Applying {:?}", op);
     }

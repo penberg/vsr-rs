@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::message::Message;
+use crate::state_machine::StateMachine;
 use crate::types::{CommitID, OpNumber, ReplicaID, ViewNumber};
 use crossbeam_channel::Sender;
 use log::trace;
@@ -16,45 +17,29 @@ enum Status {
     Recovery,
 }
 
-/// State machine.
-pub trait StateMachine<Op>
-where
-    Op: Clone + Debug + Send,
-{
-    fn apply(&self, op: Op);
-}
-
 #[derive(Debug)]
-pub struct Replica<S, Op>
-where
-    S: StateMachine<Op>,
-    Op: Clone + Debug + Send,
-{
+pub struct Replica<SM: StateMachine> {
     config: Arc<Config>,
     self_id: ReplicaID,
-    state_machine: Arc<S>,
+    state_machine: Arc<SM>,
     status: RefCell<Status>,
     view_number: ViewNumber,
     commit_number: AtomicUsize,
     op_number: AtomicUsize,
-    log: RefCell<Vec<Op>>,
+    log: RefCell<Vec<SM::Input>>,
     acks: RefCell<HashMap<ReplicaID, usize>>,
     client_tx: Sender<()>,
-    replica_tx: Sender<(ReplicaID, Message<Op>)>,
+    replica_tx: Sender<(ReplicaID, Message<SM::Input>)>,
 }
 
-impl<S, Op> Replica<S, Op>
-where
-    S: StateMachine<Op>,
-    Op: Clone + Debug + Send,
-{
+impl<SM: StateMachine> Replica<SM> {
     pub fn new(
         self_id: ReplicaID,
         config: Arc<Config>,
-        state_machine: Arc<S>,
+        state_machine: Arc<SM>,
         client_tx: Sender<()>,
-        replica_tx: Sender<(ReplicaID, Message<Op>)>,
-    ) -> Replica<S, Op> {
+        replica_tx: Sender<(ReplicaID, Message<SM::Input>)>,
+    ) -> Replica<SM> {
         let status = RefCell::new(Status::Normal);
         let view_number = 0;
         let commit_number = AtomicUsize::new(0);
@@ -77,7 +62,7 @@ where
     }
 
     /// The main entry point to replica logic.
-    pub fn on_message(&self, message: Message<Op>) {
+    pub fn on_message(&self, message: Message<SM::Input>) {
         trace!("Replica {} <- {:?}", self.self_id, message);
         match message {
             Message::Request { op, .. } => {
@@ -130,7 +115,7 @@ where
 
     /// The client sends a `Request` message to the primary, which replicates
     /// the operation to the other replicas.
-    fn on_request(&self, op: Op) {
+    fn on_request(&self, op: SM::Input) {
         // TODO: If not primary, drop request, advise client to connect to primary.
         assert!(self.is_primary());
         // TODO: If not in normal status, drop request, advise client to try later.
@@ -161,7 +146,7 @@ where
     fn on_prepare(
         &self,
         view_number: ViewNumber,
-        op: Op,
+        op: SM::Input,
         op_number: OpNumber,
         commit_number: CommitID,
     ) {
@@ -257,7 +242,7 @@ where
     fn on_new_state(
         &self,
         view_number: ViewNumber,
-        log: Vec<Op>,
+        log: Vec<SM::Input>,
         op_number_start: OpNumber,
         op_number_end: OpNumber,
         commit_number: CommitID,
@@ -300,7 +285,7 @@ where
         });
     }
 
-    fn append_to_log(&self, op: Op) {
+    fn append_to_log(&self, op: SM::Input) {
         let mut log = self.log.borrow_mut();
         log.push(op);
         self.op_number.fetch_add(1, Ordering::SeqCst);
@@ -329,13 +314,13 @@ where
     }
 
     /// Sends a message to the primary.
-    fn send_msg_to_primary(&self, message: Message<Op>) {
+    fn send_msg_to_primary(&self, message: Message<SM::Input>) {
         let primary_id = self.primary_id();
         self.send_msg(primary_id, message);
     }
 
     /// Sends a message to all other replicas.
-    fn send_msg_to_others(&self, message: Message<Op>) {
+    fn send_msg_to_others(&self, message: Message<SM::Input>) {
         let replicas = self.config.replicas.borrow();
         for replica_id in replicas.iter() {
             if *replica_id == self.self_id {
@@ -345,7 +330,7 @@ where
         }
     }
 
-    fn send_msg(&self, replica_id: ReplicaID, message: Message<Op>) {
+    fn send_msg(&self, replica_id: ReplicaID, message: Message<SM::Input>) {
         self.replica_tx.send((replica_id, message)).unwrap();
     }
 

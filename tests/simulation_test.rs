@@ -150,12 +150,15 @@ struct Accumulator {
 
 impl Accumulator {
     fn new() -> Accumulator {
-        let accumulator = Mutex::new(0);
+        let accumulator: parking_lot::lock_api::Mutex<parking_lot::RawMutex, i32> = Mutex::new(0);
         Accumulator { accumulator }
     }
 }
 
-impl StateMachine<Op> for Accumulator {
+impl StateMachine for Accumulator {
+    type Input = Op;
+    type Output = ();
+
     fn apply(&self, op: Op) {
         let mut accumulator = self.accumulator.lock();
         match op {

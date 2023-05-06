@@ -2,13 +2,15 @@ pub mod client;
 pub mod config;
 pub mod message;
 pub mod replica;
+pub mod state_machine;
 
 mod types;
 
 pub use client::Client;
 pub use config::Config;
 pub use message::Message;
-pub use replica::{Replica, StateMachine};
+pub use replica::Replica;
+pub use state_machine::StateMachine;
 
 #[cfg(test)]
 mod tests {
@@ -196,7 +198,10 @@ mod tests {
         }
     }
 
-    impl StateMachine<Op> for Accumulator {
+    impl StateMachine for Accumulator {
+        type Input = Op;
+        type Output = ();
+
         fn apply(&self, op: Op) {
             let mut accumulator = self.accumulator.lock();
             match op {
