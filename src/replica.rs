@@ -153,11 +153,11 @@ where
         });
     }
 
-    // The primary sends a `Prepare` message to replicate an operation.
-    // The replicas that receive the message will reply with `PrepareOk` when
-    // they have appended `op` to their logs. The message also contains the
-    // commit number of the primary, so that the replicas can commit their
-    // logs up to that point.
+    /// The primary sends a `Prepare` message to replicate an operation to backup
+    /// nodes. The nodes that receive a `Prepare` message will reply with `PrepareOk`
+    /// when they have appended `op` to their logs. The message also contains the
+    /// commit number of the primary, so that the backups can commit their logs up
+    /// to that point.
     fn on_prepare(
         &self,
         view_number: ViewNumber,
@@ -168,13 +168,13 @@ where
         assert!(!self.is_primary());
         // TODO: If view number is not the same, initiate recovery.
         assert_eq!(self.view_number, view_number);
+        if op_number <= self.op_number() {
+            return; // duplicate
+        }
         // If we fell behind in the log, initiate state transfer.
         if op_number > self.op_number() + 1 {
             self.state_transfer();
             return;
-        }
-        if op_number <= self.op_number() {
-            return; // duplicate
         }
         assert_eq!(self.op_number() + 1, op_number);
         // Append op to our log.
@@ -191,10 +191,10 @@ where
         });
     }
 
-    // Replicas send `PrepareOk` messages to the primary to acknowledge that
-    // they have appended an op to their logs. When the primary has
-    // received `PrepareOk` messages from a quorum of replicas, it commits
-    // the operation and replies to the client.
+    /// Backup nodes send `PrepareOk` message to the primary to acknowledge that
+    /// they have appended an op to their logs. When the primary has
+    /// received `PrepareOk` messages from a quorum of replicas, it commits
+    /// the operation and replies to the client.
     fn on_prepare_ok(&self, view_number: ViewNumber, op_number: OpNumber) {
         assert!(self.is_primary());
         assert_eq!(self.view_number, view_number);
@@ -210,6 +210,12 @@ where
         }
     }
 
+    /// A backup node typically commits its log as part of `Prepare`
+    /// message handling because the primary uses that also to signal the
+    /// current commit number. However, `Prepare` is sent only in
+    /// reaction to a client `Request` message. If there are no client
+    /// requests, then the primary sends a `Commit` message to backup
+    /// nodes instead to give backup nodes the chance to commit.
     fn on_commit(&self, view_number: ViewNumber, commit_number: CommitID) {
         if *self.status.borrow() != Status::Normal {
             return;
@@ -219,7 +225,7 @@ where
         }
         assert_eq!(*self.status.borrow(), Status::Normal);
         assert_eq!(self.view_number, view_number);
-        if commit_number > self.op_number.load(Ordering::SeqCst) {
+        if commit_number > self.op_number() {
             self.state_transfer();
             return;
         }
@@ -228,6 +234,8 @@ where
         }
     }
 
+    /// A replica sends a `GetState` message to another replica to catch
+    /// up on its log.
     fn on_get_state(&self, replica_id: ReplicaID, view_number: ViewNumber, op_number: OpNumber) {
         assert_eq!(*self.status.borrow(), Status::Normal);
         assert_eq!(self.view_number, view_number);
@@ -244,6 +252,8 @@ where
         );
     }
 
+    /// A replica receives a `NewState` message in response to a
+    /// `GetState` message it sent itself to catch up on its log.
     fn on_new_state(
         &self,
         view_number: ViewNumber,
@@ -274,6 +284,9 @@ where
         });
     }
 
+    /// When there are no client requests, the primary node sends a
+    /// `Commit` message to backup nodes periodically to let them commit
+    /// if needed.
     pub fn on_idle(&self) {
         if !self.is_primary() {
             return;
