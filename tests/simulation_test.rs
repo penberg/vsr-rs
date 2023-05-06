@@ -90,16 +90,16 @@ fn test_simulation() {
             client.on_request(op, Box::new(|_| {}));
         }
         match gen_hardship(&mut rng) {
-            Hardship::None => {
-                tick();
-            }
-            Hardship::DropMsg => {
+            Some(Hardship::DropMsg) => {
                 let id = rng.gen_range(1..3);
                 tick_drop(id);
             }
-            Hardship::DupMsg => {
+            Some(Hardship::DupMsg) => {
                 let id = rng.gen_range(1..3);
                 tick_dup(id);
+            }
+            None => {
+                tick();
             }
         }
         let oracle_acc = *oracle.accumulator.lock();
@@ -129,17 +129,16 @@ fn gen_idle(rng: &mut ChaCha8Rng) -> bool {
 }
 
 enum Hardship {
-    None,
     DropMsg,
     DupMsg,
 }
 
-fn gen_hardship(rng: &mut ChaCha8Rng) -> Hardship {
+fn gen_hardship(rng: &mut ChaCha8Rng) -> Option<Hardship> {
     let hardship = rng.gen_range(0..3);
     match hardship {
-        0 => Hardship::None,
-        1 => Hardship::DropMsg,
-        2 => Hardship::DupMsg,
+        0 => None,
+        1 => Some(Hardship::DropMsg),
+        2 => Some(Hardship::DupMsg),
         _ => panic!("internal error"),
     }
 }
