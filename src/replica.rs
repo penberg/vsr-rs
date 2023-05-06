@@ -28,7 +28,7 @@ pub struct Replica<SM: StateMachine> {
     op_number: AtomicUsize,
     log: RefCell<Vec<SM::Input>>,
     acks: RefCell<HashMap<ReplicaID, usize>>,
-    client_tx: Sender<()>,
+    client_tx: Sender<SM::Output>,
     replica_tx: Sender<(ReplicaID, Message<SM::Input>)>,
 }
 
@@ -37,7 +37,7 @@ impl<SM: StateMachine> Replica<SM> {
         self_id: ReplicaID,
         config: Arc<Config>,
         state_machine: Arc<SM>,
-        client_tx: Sender<()>,
+        client_tx: Sender<SM::Output>,
         replica_tx: Sender<(ReplicaID, Message<SM::Input>)>,
     ) -> Replica<SM> {
         let status = RefCell::new(Status::Normal);
@@ -190,8 +190,8 @@ impl<SM: StateMachine> Replica<SM> {
         // If we have received a quorum of `PrepareOk` messages, commit the
         // operation and reply to the client.
         if *acks == self.config.quorum() {
-            self.commit_op(op_number - 1);
-            self.respond_to_client();
+            let response = self.commit_op(op_number - 1);
+            self.respond_to_client(response);
         }
     }
 
@@ -306,11 +306,12 @@ impl<SM: StateMachine> Replica<SM> {
     }
 
     /// Commits an operation at log index `op_idx`.
-    fn commit_op(&self, op_idx: usize) {
+    fn commit_op(&self, op_idx: usize) -> SM::Output {
         let log = self.log.borrow();
         let op = &log[op_idx];
-        self.state_machine.apply(op.clone());
+        let ret = self.state_machine.apply(op.clone());
         self.commit_number.fetch_add(1, Ordering::SeqCst);
+        ret
     }
 
     /// Sends a message to the primary.
@@ -334,8 +335,8 @@ impl<SM: StateMachine> Replica<SM> {
         self.replica_tx.send((replica_id, message)).unwrap();
     }
 
-    fn respond_to_client(&self) {
-        self.client_tx.send(()).unwrap();
+    fn respond_to_client(&self, response: SM::Output) {
+        self.client_tx.send(response).unwrap();
     }
 
     fn is_primary(&self) -> bool {
