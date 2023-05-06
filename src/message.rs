@@ -13,8 +13,8 @@ where
     },
     Prepare {
         view_number: ViewNumber,
-        op: Op,
         op_number: OpNumber,
+        op: Op,
         commit_number: CommitID,
     },
     PrepareOk {

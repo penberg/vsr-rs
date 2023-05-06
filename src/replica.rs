@@ -70,11 +70,11 @@ impl<SM: StateMachine> Replica<SM> {
             }
             Message::Prepare {
                 view_number,
-                op,
                 op_number,
+                op,
                 commit_number,
             } => {
-                self.on_prepare(view_number, op, op_number, commit_number);
+                self.on_prepare(view_number, op_number, op, commit_number);
             }
             Message::PrepareOk {
                 view_number,
@@ -146,8 +146,8 @@ impl<SM: StateMachine> Replica<SM> {
     fn on_prepare(
         &self,
         view_number: ViewNumber,
-        op: SM::Input,
         op_number: OpNumber,
+        op: SM::Input,
         commit_number: CommitID,
     ) {
         assert!(!self.is_primary());
