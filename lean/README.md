@@ -15,7 +15,8 @@ traces on the real replicas and on this model and diffs what they do.
 | `Vsr/Frame.lean` | Frame lemmas: what each helper leaves alone, as `@[simp]` lemmas, so a goal about a handler stays a goal about a few fields. |
 | `Vsr/Local.lean` | The per-replica invariant `LocalInv` and the proof that every handler preserves it. |
 | `Vsr/WellFormed.lean` | The well-formedness predicate `WF` on messages and the proof that every handler only sends well-formed messages. |
-| `Vsr/Check.lean` | Executable (`Bool`) versions of every invariant, proved or candidate, which `vsr-replay` evaluates after every step. |
+| `Vsr/Liveness.lean` | A synchronous scheduler, the liveness property `settles`, and the storm counterexample: theorems, proved by running the model in the kernel, that a reachable state never settles. |
+| `Vsr/Check.lean` | Executable (`Bool`) versions of every invariant, proved or candidate, and of bounded liveness, which `vsr-replay` evaluates after every step. |
 | `Vsr/Safety.lean` | `Reachable`, the four safety properties, the lifts of the replica-level invariants to the system, and the main theorem. |
 | `Main.lean` | `vsr-replay`: runs a trace on the model and prints the observable state after each step, in the format `verify/` compares against. |
 
@@ -29,6 +30,7 @@ traces on the real replicas and on this model and diffs what they do.
 | No panic | No Rust `assert!` fires in any reachable state. | `Vsr.safety` | `sorry`. Needs layer 5. |
 | Prefix agreement | Two replicas that both committed index `i` hold the same entry there. | `Vsr.safety` | `sorry`. Needs layers 3 to 5. |
 | Durability | Every committed entry is held at its index by enough non-recovering replicas to meet every quorum they could form. | `Vsr.safety` | `sorry`. Needs layers 4 and 5. |
+| Liveness | On a synchronous network, from any reachable state with a quorum not recovering, the cluster settles: all normal, same view, nothing in flight. | `Vsr.settles` | `sorry`. Proved for the regression scenario by `Vsr.Storm.storm_settles`; tested by `Check.liveness` on every trace state. Refuted the view-change storm before its fix; see below. |
 
 The local invariant, `Vsr.Replica.LocalInv`, is:
 
@@ -59,6 +61,50 @@ EOF2
 The first two print `[propext, Quot.sound]`. The third includes `sorryAx`,
 which is how Lean marks a theorem that rests on an unwritten proof.
 
+## Liveness
+
+The safety properties say nothing about progress; a cluster that changes
+view forever satisfies all of them. `Vsr/Liveness.lean` adds what a
+liveness statement needs, time: a synchronous scheduler, `Sync.round`,
+in which every replica gets an idle period and then everything in flight
+is delivered, with what those deliveries send in flight for the next
+round. It is the simulator's order within a tick and the order of `step`
+in `tests/cluster.rs`. The property, `settles`, is that from any reachable
+state with a quorum of replicas not recovering, and whatever was in flight
+lost, the cluster reaches a round in which every replica is normal in the
+same view and nothing is in flight.
+
+`Storm.storm` is the state the regression test
+`test_view_change_does_not_start_the_next` builds: three replicas, a
+primary timeout of two idle periods, one op committed, and replica 2's
+timer starting a view change. Three theorems about it are proved by
+having the kernel run the model, about 70 seconds per build:
+
+| Theorem | Says |
+|---|---|
+| `Storm.storm_settles` | A round among the first eight is settled. |
+| `Storm.storm_settled_in_view_3` | After eight rounds every replica is normal in view 3 with its backoff decayed to zero. |
+| `Storm.storm_stays_settled` | Round 30 is settled too. |
+
+They depend on no axiom but `propext`.
+
+This is the statement that caught the view-change storm. Before the fix,
+the same three theorems said the opposite, and Lean proved that instead:
+no settled round among 500, view 251 after 500 rounds, which is what the
+Rust test printed, and a run periodic in everything but the view number.
+The defect was that `enter_normal` reset the view-change backoff, so the
+replica that had just completed a view joined the next view change with
+the shortest wait and timed out one round before that view's `StartView`
+reached it, round the ring, forever. The fix keeps the backoff across
+`enter_normal` and forgets it only after a primary timeout of stable idle
+periods.
+
+`Check.liveness` is the bounded version, run after every step of a
+conformance trace with `livenessBound` rounds. Before the fix it fired on
+27 of the 40 traces; it fires on none now, and the Rust conformance test
+fails on any it reports. A liveness bug in a handler now shows up there
+before the simulator has to find it.
+
 ## The plan for the rest
 
 The three `sorry` properties need an inductive invariant over the whole
@@ -71,6 +117,7 @@ system, proved in layers:
 | 3 | One log per view: every `Prepare`, `StartView`, and `NewState` of view `v`, and the log of every replica whose last normal view is `v`, are prefixes of one another. | Stated as a check (`one_log_per_view`); holds on every trace tried. Next to prove. |
 | 4 | Committed means acknowledged: a committed index has a quorum of `PrepareOk` messages in `sent` behind it, in some view whose log holds that entry. `sent` is never pruned, so it is the history. | Stated as a check (`committed_acked`); holds on every trace tried. |
 | 5 | Committed entries cross view changes and recovery: any log whose last normal view is above `v` holds everything a quorum acknowledged in `v`. Quorum intersection; this is where Mathlib comes in. | Stated as a check (`committed_survives`); holds on every trace tried. |
+| 6 | Liveness on the synchronous scheduler, `settles`. Needs layer 5 and a ranking argument on the backoff. | Stated, tested on every trace state, proved for one scenario. Proof waits for layer 5. |
 
 The `assert!` in `install_log`, that an incoming log is at least as long
 as the commit number, holds only because of layer 5, so no-panic finishes

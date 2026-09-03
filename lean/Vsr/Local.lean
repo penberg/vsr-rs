@@ -124,6 +124,10 @@ theorem LocalInv.resendPrepares (v : ViewNumber) (c : CommitNumber) :
 theorem LocalInv.withHeard (b : Bool) :
     LocalInv ({ r with heardFromPrimary := b } : Replica Op Output St) := by
   simpa [LocalInv] using h
+theorem LocalInv.noteStable : LocalInv r.noteStable := by simpa [LocalInv] using h
+theorem LocalInv.withStable (n : Nat) :
+    LocalInv ({ r with idlePeriodsStable := n } : Replica Op Output St) := by
+  simpa [LocalInv] using h
 theorem LocalInv.withHeardIdle (b : Bool) (n : Nat) :
     LocalInv ({ r with heardFromPrimary := b, idlePeriodsWaiting := n } : Replica Op Output St) := by
   simpa [LocalInv] using h
@@ -517,7 +521,7 @@ theorem LocalInv.onIdle : LocalInv (Replica.onIdle m r) := by
   unfold Replica.onIdle
   split
   · split
-    · exact (h.sendToOthers _).resendPrepares _ _
+    · exact (h.noteStable.sendToOthers _).resendPrepares _ _
     · rename_i hs _; exact backupIdle h (Or.inl hs)
   · exact h.sendRecovery
   · rename_i hs; exact backupIdle (h.stateTransfer (Or.inr hs)) (by simp)
@@ -543,10 +547,10 @@ where
       LocalInv (Replica.onIdle.backupIdle m r) := by
     unfold Replica.onIdle.backupIdle
     split
-    · exact h.withHeardIdle false 0
+    · exact (h.withHeardIdle false 0).noteStable
     · try simp only
-      have hw := h.waitTimedOut
-      generalize r.waitTimedOut = p at hw ⊢
+      have hw := (h.withStable 0).waitTimedOut
+      generalize ({ r with idlePeriodsStable := 0 } : Replica Op Output St).waitTimedOut = p at hw ⊢
       obtain ⟨r', t⟩ := p
       simp only at hw ⊢
       cases t

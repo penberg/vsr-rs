@@ -42,6 +42,7 @@ structure Replica (Op Output St : Type) where
   heardFromPrimary : Bool
   idlePeriodsWaiting : Nat
   viewChangeAttempts : Nat
+  idlePeriodsStable : Nat
   startViewChangeFrom : List ReplicaId
   doViewChangeSent : Bool
   doViewChangeVotes : List (ReplicaId × Vote Op)
@@ -52,6 +53,7 @@ structure Replica (Op Output St : Type) where
   replies : List (Reply Output)
   /-- Set where the Rust would have panicked. -/
   panicked : Bool
+deriving DecidableEq
 
 namespace Replica
 
@@ -71,6 +73,7 @@ def new (selfId : ReplicaId) (config : Config) (sm : St) : Replica Op Output St 
   heardFromPrimary := true
   idlePeriodsWaiting := 0
   viewChangeAttempts := 0
+  idlePeriodsStable := 0
   startViewChangeFrom := []
   doViewChangeSent := false
   doViewChangeVotes := []
@@ -180,7 +183,7 @@ def enterNormal (r : Replica Op Output St) : Replica Op Output St :=
     catchingUp := false
     heardFromPrimary := true
     idlePeriodsWaiting := 0
-    viewChangeAttempts := 0 }
+    idlePeriodsStable := 0 }
 
 def stateTransfer (r : Replica Op Output St) : Replica Op Output St :=
   { r with status := .stateTransfer }.sendGetState r.opNumber
@@ -251,6 +254,14 @@ def startViewChange (m : Machine Op Output St) (r : Replica Op Output St) (viewN
       idlePeriodsWaiting := 0 }
   let r := r.sendToOthers (.startViewChange viewNumber r.selfId)
   maybeSendDoViewChange m r
+
+/-- `note_stable`: an idle period of stable normal operation; after
+`primaryTimeout` of them the backoff is forgotten. -/
+def noteStable (r : Replica Op Output St) : Replica Op Output St :=
+  let stable := r.idlePeriodsStable + 1
+  { r with
+    idlePeriodsStable := stable
+    viewChangeAttempts := if stable ≥ r.config.primaryTimeout then 0 else r.viewChangeAttempts }
 
 /-- `wait_timed_out`: counts the idle period and says whether the wait is
 over. -/
@@ -482,6 +493,7 @@ def onIdle (m : Machine Op Output St) (r : Replica Op Output St) : Replica Op Ou
   match r.status with
   | .normal =>
     if r.isPrimary then
+      let r := r.noteStable
       let r := r.sendToOthers (.commit r.viewNumber r.commitNumber)
       r.resendPrepares r.viewNumber r.commitNumber
     else backupIdle r
@@ -496,8 +508,10 @@ def onIdle (m : Machine Op Output St) (r : Replica Op Output St) : Replica Op Ou
       if r.doViewChangeSent then sendDoViewChange m r else r
 where
   backupIdle (r : Replica Op Output St) : Replica Op Output St :=
-    if r.heardFromPrimary then { r with heardFromPrimary := false, idlePeriodsWaiting := 0 }
+    if r.heardFromPrimary then
+      ({ r with heardFromPrimary := false, idlePeriodsWaiting := 0 } : Replica Op Output St).noteStable
     else
+      let r : Replica Op Output St := { r with idlePeriodsStable := 0 }
       let (r, timedOut) := r.waitTimedOut
       if timedOut then startViewChange m r (r.viewNumber + 1) else r
 

@@ -86,6 +86,10 @@ theorem OutboxWF.catchUpWithView (v : ViewNumber) : OutboxWF (r.catchUpWithView 
 theorem OutboxWF.withHeard (b : Bool) :
     OutboxWF ({ r with heardFromPrimary := b } : Replica Op Output St) := by
   simpa [OutboxWF] using ho
+theorem OutboxWF.noteStable : OutboxWF r.noteStable := by simpa [OutboxWF] using ho
+theorem OutboxWF.withStable (n : Nat) :
+    OutboxWF ({ r with idlePeriodsStable := n } : Replica Op Output St) := by
+  simpa [OutboxWF] using ho
 theorem OutboxWF.withHeardIdle (b : Bool) (n : Nat) :
     OutboxWF ({ r with heardFromPrimary := b, idlePeriodsWaiting := n } : Replica Op Output St) := by
   simpa [OutboxWF] using ho
@@ -405,7 +409,7 @@ theorem OutboxWF.onIdle : OutboxWF (Replica.onIdle m r) := by
   split
   · split
     · refine OutboxWF.resendPrepares ?_ _ _
-      exact ho.sendToOthers trivial
+      exact ho.noteStable.sendToOthers trivial
     · exact backupIdle hl ho
   · exact ho.sendRecovery
   · exact backupIdle (hl.stateTransfer (Or.inr (by assumption))) ho.stateTransfer
@@ -431,11 +435,11 @@ where
       OutboxWF (Replica.onIdle.backupIdle m r) := by
     unfold Replica.onIdle.backupIdle
     split
-    · exact ho.withHeardIdle false 0
+    · exact (ho.withHeardIdle false 0).noteStable
     · try simp only
-      have hw := ho.waitTimedOut
-      have hlw := hl.waitTimedOut
-      generalize r.waitTimedOut = p at hw hlw ⊢
+      have hw := (ho.withStable 0).waitTimedOut
+      have hlw := (hl.withStable 0).waitTimedOut
+      generalize ({ r with idlePeriodsStable := 0 } : Replica Op Output St).waitTimedOut = p at hw hlw ⊢
       obtain ⟨r', t⟩ := p
       simp only at hw hlw ⊢
       cases t

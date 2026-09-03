@@ -1,5 +1,6 @@
 import Vsr.WellFormed
 import Vsr.System
+import Vsr.Liveness
 
 /-!
 Executable versions of the invariants: the ones proved, and the candidates
@@ -119,10 +120,24 @@ def committedSurvives (s : System Op Output St) : Bool :=
       decide (q.lastNormalView ≤ r.lastNormalView) || q.status == .recovering ||
         q.log[i]? == r.log[i]?)
 
+/-! ### Liveness on the synchronous network -/
+
+/-- Rounds a cluster gets to settle. The backoff doubles per failed view
+change, up to ten doublings of the primary timeout, so a cluster deep in
+backoff legitimately needs a while. -/
+def livenessBound : Nat := 1000
+
+/-- `Vsr.settles`, bounded: from this state, with whatever was in flight
+lost, a cluster with a quorum not recovering settles within
+`livenessBound` rounds. -/
+def liveness (m : Machine Op Output St) (s : System Op Output St) : Bool :=
+  let voters := (s.replicas.filter fun r => r.status != .recovering).length
+  decide (voters < s.config.quorum) || Sync.settledWithin m livenessBound (Sync.ofSystem s)
+
 /-! ### All together -/
 
 /-- Every check, by name. -/
-def all (s : System Op Output St) : List (String × Bool) :=
+def all (m : Machine Op Output St) (s : System Op Output St) : List (String × Bool) :=
   [ ("local", s.replicas.all localInv),
     ("wf", s.sent.all fun (_, msg) => wf msg),
     ("drained", drained s),
@@ -132,10 +147,11 @@ def all (s : System Op Output St) : List (String × Bool) :=
     ("durability", durability s),
     ("one_log_per_view", oneLogPerView s),
     ("committed_acked", committedAcked s),
-    ("committed_survives", committedSurvives s) ]
+    ("committed_survives", committedSurvives s),
+    ("liveness", liveness m s) ]
 
 /-- The names of the checks that fail. -/
-def violations (s : System Op Output St) : List String :=
-  (all s).filterMap fun (name, ok) => if ok then none else some name
+def violations (m : Machine Op Output St) (s : System Op Output St) : List String :=
+  (all m s).filterMap fun (name, ok) => if ok then none else some name
 
 end Vsr.Check

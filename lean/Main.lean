@@ -113,7 +113,7 @@ def main (args : List String) : IO UInt32 := do
       for r in s'.replicas do
         IO.println (fmtReplica id r)
         id := id + 1
-      for name in Check.violations s' do
+      for name in Check.violations recorder s' do
         IO.eprintln s!"violation step {stepNumber} {name}"
       system := some s'
       stepNumber := stepNumber + 1

@@ -361,6 +361,17 @@ end CatchUp
 @[simp] theorem addAcksForUncommitted_config : r.addAcksForUncommitted.config = r.config := rfl
 @[simp] theorem addAcksForUncommitted_panicked : r.addAcksForUncommitted.panicked = r.panicked := rfl
 
+@[simp] theorem noteStable_status : r.noteStable.status = r.status := rfl
+@[simp] theorem noteStable_viewNumber : r.noteStable.viewNumber = r.viewNumber := rfl
+@[simp] theorem noteStable_lastNormalView : r.noteStable.lastNormalView = r.lastNormalView := rfl
+@[simp] theorem noteStable_commitNumber : r.noteStable.commitNumber = r.commitNumber := rfl
+@[simp] theorem noteStable_log : r.noteStable.log = r.log := rfl
+@[simp] theorem noteStable_catchingUp : r.noteStable.catchingUp = r.catchingUp := rfl
+@[simp] theorem noteStable_selfId : r.noteStable.selfId = r.selfId := rfl
+@[simp] theorem noteStable_config : r.noteStable.config = r.config := rfl
+@[simp] theorem noteStable_panicked : r.noteStable.panicked = r.panicked := rfl
+@[simp] theorem noteStable_outbox : r.noteStable.outbox = r.outbox := rfl
+
 @[simp] theorem waitTimedOut_status : r.waitTimedOut.1.status = r.status := rfl
 @[simp] theorem waitTimedOut_viewNumber : r.waitTimedOut.1.viewNumber = r.viewNumber := rfl
 @[simp] theorem waitTimedOut_lastNormalView : r.waitTimedOut.1.lastNormalView = r.lastNormalView := rfl

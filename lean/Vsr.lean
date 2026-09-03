@@ -4,5 +4,6 @@ import Vsr.System
 import Vsr.Frame
 import Vsr.Local
 import Vsr.WellFormed
+import Vsr.Liveness
 import Vsr.Check
 import Vsr.Safety
