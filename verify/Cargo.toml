@@ -1,0 +1,21 @@
+[package]
+name = "vsr-verify"
+version = "0.1.0"
+edition = "2021"
+description = "Checks vsr-rs against its Lean model on the same traces"
+publish = false
+
+[lib]
+name = "vsr_verify"
+path = "lib.rs"
+
+[[bin]]
+name = "vsr-verify"
+path = "main.rs"
+
+[[test]]
+name = "verify_tests"
+path = "verify_tests.rs"
+
+[dependencies]
+vsr-rs = { path = ".." }

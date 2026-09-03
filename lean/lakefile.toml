@@ -1,0 +1,9 @@
+name = "vsr"
+defaultTargets = ["Vsr", "vsr-replay"]
+
+[[lean_lib]]
+name = "Vsr"
+
+[[lean_exe]]
+name = "vsr-replay"
+root = "Main"

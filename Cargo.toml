@@ -7,7 +7,7 @@ edition = "2021"
 path = "lib.rs"
 
 [workspace]
-members = ["simulator"]
+members = ["simulator", "verify"]
 
 [dependencies]
 log = "0.4.17"
