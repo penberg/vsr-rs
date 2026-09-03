@@ -274,28 +274,29 @@ def acceptFromPrimary (r : Replica Op Output St) (viewNumber : ViewNumber) :
     | .stateTransfer | .recovering => (r, false)
     | .viewChange => (r.catchUpWithView viewNumber, false)
 
+/-- Appends a new request to the log, records our own acknowledgement,
+and replicates it. -/
+def prepareRequest (r : Replica Op Output St) (clientId : ClientId) (requestNumber : RequestNumber)
+    (op : Op) : Replica Op Output St :=
+  let r := r.appendToLog ⟨clientId, requestNumber, op⟩
+  let opNumber := r.opNumber
+  let r := { r with acks := Assoc.insert r.acks opNumber [r.selfId] }
+  r.sendToOthers (.prepare r.viewNumber opNumber clientId requestNumber op r.commitNumber)
+
 def onRequest (r : Replica Op Output St) (clientId : ClientId) (requestNumber : RequestNumber)
     (op : Op) : Replica Op Output St :=
   if !r.isPrimary ∨ r.status ≠ .normal then r
   else
-    let resend : Option (Replica Op Output St) :=
-      match Assoc.lookup r.clientTable clientId with
-      | none => none
-      | some entry =>
-        if requestNumber < entry.requestNumber then some r
-        else if requestNumber = entry.requestNumber then
-          some (match entry.reply with
-            | some result =>
-              { r with replies := r.replies ++ [⟨r.viewNumber, clientId, requestNumber, result⟩] }
-            | none => r)
-        else none
-    match resend with
-    | some r => r
-    | none =>
-      let r := r.appendToLog ⟨clientId, requestNumber, op⟩
-      let opNumber := r.opNumber
-      let r := { r with acks := Assoc.insert r.acks opNumber [r.selfId] }
-      r.sendToOthers (.prepare r.viewNumber opNumber clientId requestNumber op r.commitNumber)
+    match Assoc.lookup r.clientTable clientId with
+    | none => r.prepareRequest clientId requestNumber op
+    | some entry =>
+      if requestNumber < entry.requestNumber then r
+      else if requestNumber = entry.requestNumber then
+        match entry.reply with
+        | some result =>
+          { r with replies := r.replies ++ [⟨r.viewNumber, clientId, requestNumber, result⟩] }
+        | none => r
+      else r.prepareRequest clientId requestNumber op
 
 def onPrepare (m : Machine Op Output St) (r : Replica Op Output St) (viewNumber : ViewNumber)
     (opNumber : OpNumber) (entry : LogEntry Op) (commitNumber : CommitNumber) :
@@ -367,19 +368,20 @@ def onNewState (m : Machine Op Output St) (r : Replica Op Output St) (viewNumber
 
 /-! ### View change messages -/
 
+/-- Records that `replicaId` wants the current view, and sends
+`DoViewChange` if that makes `f` of them. -/
+def noteStartViewChange (m : Machine Op Output St) (r : Replica Op Output St) (replicaId : ReplicaId) :
+    Replica Op Output St :=
+  maybeSendDoViewChange m
+    { r with startViewChangeFrom := (NatSet.insert r.startViewChangeFrom replicaId).1 }
+
 def onStartViewChange (m : Machine Op Output St) (r : Replica Op Output St) (viewNumber : ViewNumber)
     (replicaId : ReplicaId) : Replica Op Output St :=
   if viewNumber < r.viewNumber then r
-  else
-    let step : Option (Replica Op Output St) :=
-      if viewNumber > r.viewNumber then some (startViewChange m r viewNumber)
-      else if r.status ≠ .viewChange then none
-      else some r
-    match step with
-    | none => if r.status = .normal ∧ r.isPrimary then r.sendStartView replicaId else r
-    | some r =>
-      let r := { r with startViewChangeFrom := (NatSet.insert r.startViewChangeFrom replicaId).1 }
-      maybeSendDoViewChange m r
+  else if viewNumber > r.viewNumber then noteStartViewChange m (startViewChange m r viewNumber) replicaId
+  else if r.status ≠ .viewChange then
+    if r.status = .normal ∧ r.isPrimary then r.sendStartView replicaId else r
+  else noteStartViewChange m r replicaId
 
 def onDoViewChange (m : Machine Op Output St) (r : Replica Op Output St) (viewNumber : ViewNumber)
     (replicaId : ReplicaId) (vote : Vote Op) : Replica Op Output St :=

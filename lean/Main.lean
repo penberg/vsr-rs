@@ -1,9 +1,14 @@
 import Vsr
+import Vsr.Check
 
 /-!
 Replays a trace of cluster steps on the Lean model and prints what it sees
 after each one, in the format the Rust conformance test prints for the real
 replicas. The test diffs the two.
+
+After each step the invariants and the candidate invariants in
+`Vsr.Check` are evaluated, and any that fail are reported on stderr as
+`violation step N name`. The conformance test fails on any such line.
 
 The trace is one step per line:
 
@@ -108,6 +113,8 @@ def main (args : List String) : IO UInt32 := do
       for r in s'.replicas do
         IO.println (fmtReplica id r)
         id := id + 1
+      for name in Check.violations s' do
+        IO.eprintln s!"violation step {stepNumber} {name}"
       system := some s'
       stepNumber := stepNumber + 1
   return 0

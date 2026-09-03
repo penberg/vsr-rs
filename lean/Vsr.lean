@@ -1,4 +1,8 @@
 import Vsr.Types
 import Vsr.Replica
 import Vsr.System
+import Vsr.Frame
+import Vsr.Local
+import Vsr.WellFormed
+import Vsr.Check
 import Vsr.Safety

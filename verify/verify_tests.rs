@@ -37,7 +37,9 @@ fn build_model(lake: &Path) {
     });
 }
 
-fn replay_on_model(lake: &Path, trace_path: &Path) -> String {
+/// What the model prints on a trace, and the invariant violations it
+/// reported on stderr, one `violation step N name` line each.
+fn replay_on_model(lake: &Path, trace_path: &Path) -> (String, String) {
     let output = Command::new(lake)
         .args(["exe", "vsr-replay"])
         .arg(trace_path)
@@ -50,7 +52,14 @@ fn replay_on_model(lake: &Path, trace_path: &Path) -> String {
         trace_path.display(),
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(output.stdout).unwrap()
+    // Lake prints its own build log on stderr before the program runs.
+    let violations = String::from_utf8(output.stderr)
+        .unwrap()
+        .lines()
+        .filter(|line| line.starts_with("violation "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    (String::from_utf8(output.stdout).unwrap(), violations)
 }
 
 /// The first line where the two differ, with a little context.
@@ -90,11 +99,19 @@ fn replica_matches_lean_model() {
         let trace_path = dir.join(format!("trace-{seed}.txt"));
         std::fs::write(&trace_path, trace.to_string()).unwrap();
         let rust = Cluster::observe(&trace);
-        let lean = replay_on_model(&lake, &trace_path);
+        let (lean, violations) = replay_on_model(&lake, &trace_path);
         if let Some(diff) = first_difference(&rust, &lean) {
             panic!(
                 "seed {seed}: the Rust replica and the Lean model diverge at {diff}\n\
                  trace: {}\nreplay: cargo run -p vsr-verify -- {seed} --observe",
+                trace_path.display()
+            );
+        }
+        if !violations.is_empty() {
+            panic!(
+                "seed {seed}: the model reports invariant violations (see lean/Vsr/Check.lean):\n{}\
+                 trace: {}",
+                violations,
                 trace_path.display()
             );
         }

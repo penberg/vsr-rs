@@ -1,11 +1,14 @@
 import Vsr.System
+import Vsr.Local
+import Vsr.WellFormed
 
 /-!
 The safety properties, stated over reachable systems. They are the
 simulator's, from `simulator/properties.rs`.
 
-Proved so far: the lemmas about `commitUpTo`. The main theorem is stated
-and left as `sorry`; see the note on it.
+Proved so far: `CommitBounded`, from the per-replica invariant in
+`Vsr.Local`, which every handler preserves. The rest of the main theorem
+is stated and left as `sorry`; see the note on it.
 -/
 
 namespace Vsr
@@ -32,56 +35,173 @@ def PrefixAgreement (s : System Op Output St) : Prop :=
   ∀ a ∈ s.replicas, ∀ b ∈ s.replicas, ∀ i,
     i < a.commitNumber → i < b.commitNumber → a.log[i]? = b.log[i]?
 
-/-- Every committed entry sits at its index in a quorum of logs. -/
+/-- Every committed entry survives any view change: every quorum the
+replicas that are not recovering could form includes one that holds it at
+its index. A recovering replica holds nothing and votes for nothing, so it
+counts on neither side. With nobody recovering this is a majority. This is
+`Durability` in `simulator/properties.rs`. -/
 def Durability [DecidableEq Op] (s : System Op Output St) : Prop :=
-  ∀ r ∈ s.replicas, ∀ i, i < r.commitNumber →
-    s.config.quorum ≤ (s.replicas.filter fun o => o.log[i]? = r.log[i]?).length
+  let voters := s.replicas.filter fun o => o.status ≠ .recovering
+  ∀ r ∈ voters, ∀ i, i < r.commitNumber →
+    voters.length + 1 - s.config.quorum ≤ (voters.filter fun o => o.log[i]? = r.log[i]?).length
 
-/-- The main theorem. Not proved: it needs an inductive invariant over the
-whole system, in particular that every `sent` message is well formed and
-that quorum intersection carries committed entries across view changes and
-recovery. That is the work the model exists to make possible; it is not
-done yet. -/
+/-! ### The local invariant lifted to the system -/
+
+/-- Every replica satisfies the per-replica invariant. -/
+def AllLocal (s : System Op Output St) : Prop :=
+  ∀ r ∈ s.replicas, Replica.LocalInv r
+
+theorem mem_set_or {α : Type} : ∀ {l : List α} {i : Nat} {y x : α}, x ∈ l.set i y → x ∈ l ∨ x = y
+  | [], _, _, _, h => by simp at h
+  | a :: l, 0, y, x, h => by
+    simp only [List.set_cons_zero, List.mem_cons] at h
+    rcases h with h | h
+    · exact Or.inr h
+    · exact Or.inl (List.mem_cons_of_mem a h)
+  | a :: l, i + 1, y, x, h => by
+    simp only [List.set_cons_succ, List.mem_cons] at h
+    rcases h with h | h
+    · exact Or.inl (by simp [h])
+    · rcases mem_set_or h with h | h
+      · exact Or.inl (List.mem_cons_of_mem a h)
+      · exact Or.inr h
+
+theorem AllLocal.init (config : Config) (sm : St) :
+    AllLocal (System.init config sm : System Op Output St) := by
+  intro r hr
+  simp only [System.init, List.mem_map] at hr
+  obtain ⟨id, _, rfl⟩ := hr
+  exact Replica.LocalInv.new id config sm
+
+theorem AllLocal.drain {s : System Op Output St} (hs : AllLocal s) (id : ReplicaId)
+    {r' : Replica Op Output St} (hr' : Replica.LocalInv r') : AllLocal (s.drain id r') := by
+  intro r hr
+  simp only [System.drain] at hr
+  rcases mem_set_or hr with hr | rfl
+  · exact hs r hr
+  · simpa [Replica.LocalInv] using hr'
+
+theorem AllLocal.withReplica {s : System Op Output St} (hs : AllLocal s) (id : ReplicaId)
+    (f : Replica Op Output St → Replica Op Output St)
+    (hf : ∀ r, Replica.LocalInv r → Replica.LocalInv (f r)) : AllLocal (s.withReplica id f) := by
+  unfold System.withReplica
+  split
+  · exact hs
+  · rename_i r hr
+    exact hs.drain id (hf r (hs r (List.mem_of_getElem? hr)))
+
+theorem AllLocal.step (m : Machine Op Output St) (sm : St) {s : System Op Output St}
+    (hs : AllLocal s) (st : Step Op) : AllLocal (s.step m sm st) := by
+  cases st with
+  | deliver i =>
+    simp only [System.step]
+    split
+    · exact hs
+    · exact hs.withReplica _ _ (fun _ h => Replica.LocalInv.onMessage m h _)
+  | idle id =>
+    simp only [System.step]
+    exact hs.withReplica _ _ (fun _ h => Replica.LocalInv.onIdle m h)
+  | request to c n op =>
+    simp only [System.step]
+    exact hs.withReplica _ _ (fun _ h => Replica.LocalInv.onMessage m h _)
+  | recover id nonce =>
+    simp only [System.step]
+    exact hs.withReplica _ _ (fun _ _ => Replica.LocalInv.recover _ _ _ _ _)
+
+theorem allLocal_of_reachable {m : Machine Op Output St} {sm : St} {config : Config}
+    {s : System Op Output St} (h : Reachable m sm config s) : AllLocal s := by
+  induction h with
+  | init => exact AllLocal.init _ _
+  | step _ ih => exact ih.step _ _ _
+
+/-! ### Well-formed messages lifted to the system -/
+
+/-- Every message ever sent is well formed. -/
+def SentWF (s : System Op Output St) : Prop := ∀ x ∈ s.sent, WF x.2
+
+/-- Between steps every outbox is empty: `drain` took it. -/
+def Drained (s : System Op Output St) : Prop := ∀ r ∈ s.replicas, r.outbox = []
+
+theorem SentWF.init (config : Config) (sm : St) : SentWF (System.init config sm : System Op Output St) := by
+  intro x hx; simp [System.init] at hx
+
+theorem Drained.init (config : Config) (sm : St) : Drained (System.init config sm : System Op Output St) := by
+  intro r hr
+  simp only [System.init, List.mem_map] at hr
+  obtain ⟨id, _, rfl⟩ := hr
+  rfl
+
+theorem Drained.drain {s : System Op Output St} (hd : Drained s) (id : ReplicaId)
+    (r' : Replica Op Output St) : Drained (s.drain id r') := by
+  intro r hr
+  simp only [System.drain] at hr
+  rcases mem_set_or hr with hr | rfl
+  · exact hd r hr
+  · rfl
+
+theorem SentWF.drain {s : System Op Output St} (hw : SentWF s) (id : ReplicaId)
+    {r' : Replica Op Output St} (ho : Replica.OutboxWF r') : SentWF (s.drain id r') := by
+  intro x hx
+  simp only [System.drain, List.mem_append] at hx
+  rcases hx with hx | hx
+  · exact hw x hx
+  · exact ho x hx
+
+theorem SentWF.withReplica {s : System Op Output St} (hl : AllLocal s) (hd : Drained s) (hw : SentWF s)
+    (id : ReplicaId) (f : Replica Op Output St → Replica Op Output St)
+    (hf : ∀ r, Replica.LocalInv r → Replica.OutboxWF r → Replica.OutboxWF (f r)) :
+    SentWF (s.withReplica id f) ∧ Drained (s.withReplica id f) := by
+  unfold System.withReplica
+  split
+  · exact ⟨hw, hd⟩
+  · rename_i r hr
+    have hmem := List.mem_of_getElem? hr
+    have ho : Replica.OutboxWF r := by
+      intro x hx; rw [hd r hmem] at hx; simp at hx
+    exact ⟨hw.drain id (hf r (hl r hmem) ho), hd.drain id _⟩
+
+theorem SentWF.step (m : Machine Op Output St) (sm : St) {s : System Op Output St}
+    (hl : AllLocal s) (hd : Drained s) (hw : SentWF s) (st : Step Op) :
+    SentWF (s.step m sm st) ∧ Drained (s.step m sm st) := by
+  cases st with
+  | deliver i =>
+    simp only [System.step]
+    split
+    · exact ⟨hw, hd⟩
+    · exact SentWF.withReplica hl hd hw _ _ (fun _ h ho => Replica.OutboxWF.onMessage m h ho _)
+  | idle id =>
+    simp only [System.step]
+    exact SentWF.withReplica hl hd hw _ _ (fun _ h ho => Replica.OutboxWF.onIdle m h ho)
+  | request to c n op =>
+    simp only [System.step]
+    exact SentWF.withReplica hl hd hw _ _ (fun _ h ho => Replica.OutboxWF.onMessage m h ho _)
+  | recover id nonce =>
+    simp only [System.step]
+    exact SentWF.withReplica hl hd hw _ _ (fun _ _ _ => Replica.OutboxWF.recover _ _ _ _ _)
+
+/-- Proved: in every reachable state, every message ever sent is well
+formed. -/
+theorem sentWF_of_reachable {m : Machine Op Output St} {sm : St} {config : Config}
+    {s : System Op Output St} (h : Reachable m sm config s) : SentWF s := by
+  suffices SentWF s ∧ Drained s from this.1
+  induction h with
+  | init => exact ⟨SentWF.init _ _, Drained.init _ _⟩
+  | step hr ih => exact SentWF.step _ _ (allLocal_of_reachable hr) ih.2 ih.1 _
+
+/-- Proved: in every reachable state, every replica's commit number is
+within its log. -/
+theorem commitBounded_of_reachable {m : Machine Op Output St} {sm : St} {config : Config}
+    {s : System Op Output St} (h : Reachable m sm config s) : CommitBounded s :=
+  fun r hr => ((allLocal_of_reachable h) r hr).1
+
+/-- The rest of the main theorem. Not proved: it needs an inductive
+invariant over the whole system, in particular that every `sent` message
+is well formed and that quorum intersection carries committed entries
+across view changes and recovery. `Vsr.Local` is the first layer of that
+invariant; the next is well-formedness of `sent`. -/
 theorem safety [DecidableEq Op] (m : Machine Op Output St) (sm : St) (config : Config)
     (s : System Op Output St) (h : Reachable m sm config s) :
-    NoPanic s ∧ CommitBounded s ∧ PrefixAgreement s ∧ Durability s := by
+    NoPanic s ∧ PrefixAgreement s ∧ Durability s := by
   sorry
-
-/-! ### What is proved: commit numbers only move forward -/
-
-namespace Replica
-
-theorem commitOp_commitNumber (m : Machine Op Output St) (r : Replica Op Output St)
-    (entry : LogEntry Op) : (commitOp m r entry).1.commitNumber = r.commitNumber + 1 := by
-  simp [commitOp]
-
-theorem commitUpTo_go_mono (m : Machine Op Output St) (reply : Bool) :
-    ∀ (n : Nat) (r : Replica Op Output St),
-      r.commitNumber ≤ (commitUpTo.go m reply n r).commitNumber := by
-  intro n
-  induction n with
-  | zero => intro r; simp [commitUpTo.go]
-  | succ n ih =>
-    intro r
-    simp only [commitUpTo.go]
-    split
-    · simp [panic]
-    · rename_i entry _
-      have h1 := commitOp_commitNumber m r entry
-      generalize hc : commitOp m r entry = p at h1 ⊢
-      obtain ⟨r', response⟩ := p
-      simp only at h1 ⊢
-      have h3 : (if reply = true then { r' with replies := r'.replies ++ [response] } else r').commitNumber
-          = r'.commitNumber := by split <;> rfl
-      have h2 := ih (if reply = true then { r' with replies := r'.replies ++ [response] } else r')
-      rw [h3] at h2
-      exact Nat.le_trans (by rw [h1]; exact Nat.le_succ _) h2
-
-theorem commitUpTo_mono (m : Machine Op Output St) (r : Replica Op Output St)
-    (commitNumber : CommitNumber) (reply : Bool) :
-    r.commitNumber ≤ (commitUpTo m r commitNumber reply).commitNumber :=
-  commitUpTo_go_mono m reply _ r
-
-end Replica
 
 end Vsr
