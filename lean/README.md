@@ -99,8 +99,18 @@ changed nothing and sent nothing leaves the cluster as it was, and
 `System.drain_send`, a replica that changed nothing and sent one message
 leaves the cluster with one more message. On those, `Inv.addNewState`
 proves that a `NewState` cut from a normal replica's log keeps every
-clause, and `Inv.onGetState` is the handler. Its axioms are `propext`
-only.
+clause, and `Inv.onGetState` is the handler.
+
+`Inv.replace` is the reusable core for a step that changes one replica but
+sends nothing: since `sent` and `started` are unchanged, every message
+fact transfers by monotonicity, and only the replaced replica is
+re-checked against the field equalities it is given. On it,
+`Inv.commitStep` proves that a normal backup raising its commit number to
+a backed bound within its log keeps `Inv` — the receiving side of
+`onCommit`, `onPrepare`, and `onNewState`. It needs that `commitUpTo` does
+not panic when the target is within the log (`commitUpTo_false_panicked`,
+a `go`-induction ruling out the missing-entry branch). All rest on
+`propext` and `Quot.sound`.
 
 Every handler proof has the same skeleton: old facts survive by
 monotonicity of everything stated through `sent` and `started`; the new

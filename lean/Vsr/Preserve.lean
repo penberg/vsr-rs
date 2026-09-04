@@ -372,6 +372,41 @@ theorem commitUpTo_le_max (m : Machine Op Output St) (r : Replica Op Output St) 
     · rw [Nat.sub_eq_zero_of_le h, Nat.add_zero, Nat.max_eq_left h]
   exact hmax ▸ hih
 
+theorem commitUpTo_go_false_panicked (m : Machine Op Output St) :
+    ∀ (n : Nat) (r : Replica Op Output St),
+      r.commitNumber + n ≤ r.log.length →
+      (Replica.commitUpTo.go m false n r).panicked = r.panicked := by
+  intro n
+  induction n with
+  | zero => intro r _; rfl
+  | succ n ih =>
+    intro r hle
+    rw [Replica.commitUpTo_go_succ]
+    have hlt : r.commitNumber < r.log.length :=
+      Nat.lt_of_lt_of_le (Nat.lt_add_of_pos_right (Nat.succ_pos n)) hle
+    split
+    · rename_i heq
+      rw [List.getElem?_eq_getElem hlt] at heq
+      exact absurd heq (Option.some_ne_none _)
+    · rename_i entry _
+      show (Replica.commitUpTo.go m false n (Replica.commitOp m r entry).1).panicked = r.panicked
+      rw [ih (Replica.commitOp m r entry).1 ?_, Replica.commitOp_panicked]
+      rw [Replica.commitOp_commitNumber, Replica.commitOp_log]
+      have heq2 : r.commitNumber + 1 + n = r.commitNumber + (n + 1) := by
+        rw [Nat.add_assoc, Nat.add_comm 1 n]
+      rw [heq2]; exact hle
+
+theorem commitUpTo_false_panicked (m : Machine Op Output St) (r : Replica Op Output St) (k : Nat)
+    (hc : r.commitNumber ≤ r.log.length) (hk : k ≤ r.log.length) :
+    (Replica.commitUpTo m r k false).panicked = r.panicked := by
+  unfold Replica.commitUpTo
+  apply commitUpTo_go_false_panicked
+  have hmax : r.commitNumber + (k - r.commitNumber) = max r.commitNumber k := by
+    rcases Nat.le_total r.commitNumber k with h | h
+    · rw [Nat.add_sub_cancel' h, Nat.max_eq_right h]
+    · rw [Nat.sub_eq_zero_of_le h, Nat.add_zero, Nat.max_eq_left h]
+  rw [hmax]; exact Nat.max_le.mpr ⟨hc, hk⟩
+
 theorem Backed.downward {s : System Op Output St} {v m n} (h : Backed s v n) (hle : m ≤ n) :
     Backed s v m := fun i hi => h i (Nat.lt_of_lt_of_le hi hle)
 
@@ -391,6 +426,196 @@ theorem System.drain_replace {s : System Op Output St} {id : ReplicaId} {r' : Re
   have : ({ r' with outbox := [], replies := [], chosenVotes := none } : Replica Op Output St) = r' := by
     rw [← ho, ← hp, ← hc]
   rw [this, ho, hp, hc]; simp
+
+/-- A replica changed to `r'` that sends nothing (empty outbox, replies,
+chosen votes) and agrees with the old `r` on every field the invariant
+reads except the commit number, which is backed, preserves `Inv`. Nothing
+is sent, so `sent` and `started` are unchanged; only the replaced replica
+is re-checked. -/
+theorem Inv.replace {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
+    {r r' : Replica Op Output St} (hr : s.replicas[id]? = some r)
+    (hlog : r'.log = r.log) (hstat : r'.status = r.status) (hview : r'.viewNumber = r.viewNumber)
+    (hlnv : r'.lastNormalView = r.lastNormalView) (hcatch : r'.catchingUp = r.catchingUp)
+    (hself : r'.selfId = r.selfId) (hconf : r'.config = r.config) (hacks : r'.acks = r.acks)
+    (hnonce : r'.recoveryNonce = r.recoveryNonce) (hpanic : r'.panicked = false)
+    (hout : r'.outbox = []) (hreplies : r'.replies = []) (hcv : r'.chosenVotes = none)
+    (hbacked : Backed s r.lastNormalView r'.commitNumber) (hloc : Replica.LocalInv r') :
+    Inv (s.drain id r') := by
+  have hmem : r ∈ s.replicas := List.mem_of_getElem? hr
+  rw [System.drain_replace hout hreplies hcv]
+  generalize hs' : ({ s with replicas := s.replicas.set id r' } : System Op Output St) = s'
+  have hse : s'.sent = s.sent := by rw [← hs']
+  have hste : s'.started = s.started := by rw [← hs']
+  have hce : s'.config = s.config := by rw [← hs']
+  have hre : s'.replicas = s.replicas.set id r' := by rw [← hs']
+  have fS : ∀ x ∈ s.sent, x ∈ s'.sent := fun x h => by rw [hse]; exact h
+  have fS' : ∀ x ∈ s'.sent, x ∈ s.sent := fun x h => by rw [← hse]; exact h
+  have fT : ∀ x ∈ s.started, x ∈ s'.started := fun x h => by rw [hste]; exact h
+  have fT' : ∀ x ∈ s'.started, x ∈ s.started := fun x h => by rw [← hste]; exact h
+  have hSent : ∀ to msg, Sent s' to msg ↔ Sent s to msg := fun to msg => by
+    simp only [Sent, hse]
+  have hFrag : ∀ v off log, Frag s' v off log ↔ Frag s v off log := fun v off log =>
+    ⟨Frag.mono fS' fT', Frag.mono fS fT⟩
+  have hHolds : ∀ v i e, Holds s' v i e ↔ Holds s v i e := fun v i e =>
+    ⟨Holds.mono fS' fT', Holds.mono fS fT⟩
+  have hBacked : ∀ v k, Backed s' v k ↔ Backed s v k := fun v k =>
+    ⟨Backed.mono fS' fT' hce.symm, Backed.mono fS fT hce⟩
+  have hComm : ∀ v i e, Committed s' v i e ↔ Committed s v i e := fun v i e =>
+    ⟨Committed.mono fS' fT' hce.symm, Committed.mono fS fT hce⟩
+  have hprim : r'.isPrimary = r.isPrimary := by
+    unfold Replica.isPrimary Replica.primaryId; rw [hself, hconf, hview]
+  have hrepl : ∀ x ∈ s'.replicas, x ∈ s.replicas ∨ r' = x := fun x hx => by
+    rw [hre] at hx; exact (mem_set_or hx).imp (fun h => h) Eq.symm
+  -- primaryId of s' equals that of s
+  have hpid : ∀ v, s'.config.primaryId v = s.config.primaryId v :=
+    fun v => congrArg (fun c => Config.primaryId c v) hce
+  refine {
+    noPanic := ?_, ids := ?_, local_ := ?_, drained := ?_, wf := ?_, oneLog := ?_,
+    backed := ?_, survives := ?_, acks := ?_, catching := ?_, acksHold := ?_, toOthers := ?_,
+    longest := ?_, chosen := ?_, votesCover := ?_, belowView := ?_,
+    recoveryCovers := ?_, covered := ?_, agree := ?_, startedViews := ?_, clean := ?_, two := ?_ }
+  · intro x hx; rcases hrepl x hx with h | rfl
+    · exact hinv.noPanic x h
+    · exact hpanic
+  · intro i x hx
+    rw [hre] at hx
+    have hlt : id < s.replicas.length := (List.getElem?_eq_some_iff.mp hr).1
+    by_cases hi : i = id
+    · subst hi
+      rw [List.getElem?_set_self hlt] at hx
+      simp only [Option.some.injEq] at hx; subst hx
+      obtain ⟨hid, hcfg⟩ := hinv.ids i r hr
+      exact ⟨hself.trans hid, hconf.trans (hce ▸ hcfg)⟩
+    · rw [List.getElem?_set_ne (Ne.symm hi)] at hx
+      obtain ⟨hid, hcfg⟩ := hinv.ids i x hx
+      exact ⟨hid, hce ▸ hcfg⟩
+  · intro x hx; rcases hrepl x hx with h | rfl
+    · exact hinv.local_ x h
+    · exact hloc
+  · intro x hx; rcases hrepl x hx with h | rfl
+    · exact hinv.drained x h
+    · exact hout
+  · intro x hx; exact hinv.wf x ((hSent x.1 x.2).mp hx)
+  · refine ⟨fun v i e e' h h' => hinv.oneLog.1 v i e e' ((hHolds ..).mp h) ((hHolds ..).mp h'),
+      fun z hz i e e' he hh => ?_⟩
+    rcases hrepl z hz with h | rfl
+    · exact hinv.oneLog.2 z h i e e' he ((hHolds ..).mp hh)
+    · exact hinv.oneLog.2 r hmem i e e' (hlog ▸ he) (hlnv ▸ (hHolds ..).mp hh)
+  · refine ⟨fun z hz => ?_, fun to msg hm => ?_⟩
+    · rcases hrepl z hz with h | rfl
+      · exact (hBacked ..).mpr (hinv.backed.1 z h)
+      · rw [hlnv]; exact (hBacked ..).mpr hbacked
+    · exact MsgBacked.mono fS fT hce (hinv.backed.2 to msg ((hSent ..).mp hm))
+  · intro v' i e hc v hlt
+    obtain ⟨h1, h2, h3, h4, h5, h6, h7⟩ := hinv.survives v' i e ((hComm ..).mp hc) v hlt
+    refine ⟨fun to log o k hs => h1 to log o k ((hSent ..).mp hs),
+      fun to v'' r0 log o k hs => h2 to v'' r0 log o k ((hSent ..).mp hs),
+      fun to n r0 st hs => h3 to n r0 st ((hSent ..).mp hs),
+      fun to log a b k hs ha => h4 to log a b k ((hSent ..).mp hs) ha,
+      fun to c n op k hs => h5 to c n op k ((hSent ..).mp hs),
+      fun v'' votes q vote hstd hin hlv => h6 v'' votes q vote (fT' _ hstd) hin hlv,
+      fun z hz hzv hzr => ?_⟩
+    rcases hrepl z hz with h | rfl
+    · exact h7 z h hzv hzr
+    · rw [hlog]; exact h7 r hmem (hlnv ▸ hzv) (hstat ▸ hzr)
+  · intro z hz hzn hzp oa hoa
+    rcases hrepl z hz with h | rfl
+    · obtain ⟨c1, c2⟩ := hinv.acks z h hzn hzp oa hoa
+      exact ⟨c1, fun q hq => (c2 q hq).imp (fun h => h) (fun ⟨to, ht⟩ => ⟨to, (hSent ..).mpr ht⟩)⟩
+    · have := hinv.acks r hmem (hstat ▸ hzn) (hprim ▸ hzp) oa (by rw [hacks] at hoa; exact hoa)
+      exact ⟨by rw [hlog]; exact this.1,
+        fun q hq => (this.2 q hq).imp (fun h => hself.symm ▸ h) (fun ⟨to, ht⟩ => ⟨to, (hSent ..).mpr (hview ▸ ht)⟩)⟩
+  · intro z hz hzc
+    rcases hrepl z hz with h | rfl
+    · exact hinv.catching z h hzc
+    · rw [hself, hconf, hview]; exact hinv.catching r hmem (hcatch ▸ hzc)
+  · intro to v o q hs z hz
+    rcases hrepl z hz with h | rfl
+    · exact hinv.acksHold to v o q ((hSent ..).mp hs) z h
+    · intro hq
+      obtain ⟨ha, hb⟩ := hinv.acksHold to v o q ((hSent ..).mp hs) r hmem (hself ▸ hq)
+      exact ⟨hlnv ▸ ha, fun he hnr => by rw [hlog]; exact hb (hlnv ▸ he) (hstat ▸ hnr)⟩
+  · intro to msg hs
+    have := hinv.toOthers to msg ((hSent ..).mp hs)
+    revert this; cases msg <;> simp_all
+  · intro p hp hpn hpp
+    rcases hrepl p hp with h | rfl
+    · obtain ⟨f1, f2, f3⟩ := hinv.longest p h hpn hpp
+      refine ⟨fun off log hf => f1 off log ((hFrag ..).mp hf), fun z hz hzv hzr => ?_,
+        fun to o q hs => f3 to o q ((hSent ..).mp hs)⟩
+      rcases hrepl z hz with h2 | rfl
+      · exact f2 z h2 hzv hzr
+      · rw [hlog]; exact f2 r hmem (hlnv ▸ hzv) (hstat ▸ hzr)
+    · obtain ⟨f1, f2, f3⟩ := hinv.longest r hmem (hstat ▸ hpn) (hprim ▸ hpp)
+      refine ⟨fun off log hf => by rw [hlog]; exact f1 off log (hview ▸ (hFrag ..).mp hf),
+        fun z hz hzv hzr => ?_, fun to o q hs => by rw [hlog]; exact f3 to o q (hview ▸ (hSent ..).mp hs)⟩
+      rcases hrepl z hz with h2 | rfl
+      · rw [hlog]; exact f2 z h2 (hview ▸ hzv) hzr
+      · exact Nat.le_refl _
+  · intro to v log o k hs
+    obtain ⟨votes, best, hv, hq, hnd, hb, hpre⟩ := hinv.chosen to v log o k ((hSent ..).mp hs)
+    exact ⟨votes, best, fT _ hv, by rw [hce]; exact hq, hnd, hb, hpre⟩
+  · intro v votes hv q vote hin to o hs
+    exact hinv.votesCover v votes (fT' _ hv) q vote hin to o ((hSent ..).mp hs)
+  · intro to msg hs z hz
+    rcases hrepl z hz with h | rfl
+    · exact hinv.belowView to msg ((hSent ..).mp hs) z h
+    · simpa only [hview, hself] using hinv.belowView to msg ((hSent ..).mp hs) r hmem
+  · intro z hz hzr to v nonce r0 st hs hnhyp to' o' hs'
+    rcases hrepl z hz with h | rfl
+    · exact hinv.recoveryCovers z h hzr to v nonce r0 st ((hSent ..).mp hs) hnhyp to' o' ((hSent ..).mp hs')
+    · exact hinv.recoveryCovers r hmem (hstat ▸ hzr) to v nonce r0 st ((hSent ..).mp hs)
+        (hnonce ▸ hnhyp) to' o' ((hSent ..).mp (hself ▸ hs'))
+  · intro z hz i hi
+    rcases hrepl z hz with h | rfl
+    · obtain ⟨e, he⟩ := hinv.covered z h i hi
+      exact ⟨e, (hHolds ..).mpr he⟩
+    · obtain ⟨e, he⟩ := hinv.covered r hmem i (hlog ▸ hi)
+      exact ⟨e, hlnv ▸ (hHolds ..).mpr he⟩
+  · intro z hz w hw hlnvzw i e e' he he'
+    have get : ∀ {x : Replica Op Output St}, x ∈ s.replicas ∨ r' = x →
+        ∃ y ∈ s.replicas, y.log = x.log ∧ y.lastNormalView = x.lastNormalView := by
+      intro x hx; rcases hx with h | rfl
+      · exact ⟨x, h, rfl, rfl⟩
+      · exact ⟨r, hmem, hlog.symm, hlnv.symm⟩
+    obtain ⟨z0, hz0, hz0log, hz0lnv⟩ := get (hrepl z hz)
+    obtain ⟨w0, hw0, hw0log, hw0lnv⟩ := get (hrepl w hw)
+    exact hinv.agree z0 hz0 w0 hw0 (by rw [hz0lnv, hw0lnv]; exact hlnvzw) i e e'
+      (by rw [hz0log]; exact he) (by rw [hw0log]; exact he')
+  · obtain ⟨g1, g2, g3⟩ := hinv.startedViews
+    refine ⟨fun v votes hv => ?_,
+      fun v off log hf hpos => (g2 v off log ((hFrag ..).mp hf) hpos).imp (fun votes hh => fT _ hh),
+      fun z hz hzr hzv => ?_⟩
+    · obtain ⟨to, log, o, k, h⟩ := g1 v votes (fT' _ hv)
+      exact ⟨to, log, o, k, (hSent ..).mpr h⟩
+    · rcases hrepl z hz with h | rfl
+      · exact (g3 z h hzr hzv).imp (fun votes hh => fT _ hh)
+      · rw [hlnv]
+        exact (g3 r hmem (hstat ▸ hzr) (by rw [hlnv] at hzv; exact hzv)).imp (fun votes hh => fT _ hh)
+  · intro z hz; rcases hrepl z hz with h | rfl
+    · exact hinv.clean z h
+    · exact ⟨hreplies, hcv⟩
+  · show 2 ≤ s'.config.replicaCount
+    rw [hce]; exact hinv.two
+
+/-- A normal backup raising its commit number to a backed bound within its
+log keeps `Inv`. The receiving-side core of `onCommit`, `onPrepare`, and
+`onNewState`. -/
+theorem Inv.commitStep {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
+    {r : Replica Op Output St} (hr : s.replicas[id]? = some r) (m : Machine Op Output St) (k : Nat)
+    (hkle : k ≤ r.log.length) (hk : Backed s r.lastNormalView k) :
+    Inv (s.drain id (Replica.commitUpTo m r k false)) := by
+  have hmem : r ∈ s.replicas := List.mem_of_getElem? hr
+  have hlocal := hinv.local_ r hmem
+  have hclean := hinv.clean r hmem
+  have hbackedNew : Backed s r.lastNormalView (Replica.commitUpTo m r k false).commitNumber :=
+    (Backed.max (hinv.backed.1 r hmem) hk).downward (commitUpTo_le_max m r k false)
+  exact hinv.replace hr (by simp) (by simp) (by simp) (by simp) (by simp) (by simp) (by simp) (by simp)
+    (by simp) (by rw [commitUpTo_false_panicked m r k hlocal.1 hkle]; exact hinv.noPanic r hmem)
+    (by rw [Replica.commitUpTo_outbox]; exact hinv.drained r hmem)
+    (by rw [Replica.commitUpTo_replies_false]; exact hclean.1)
+    (by rw [Replica.commitUpTo_chosenVotes]; exact hclean.2)
+    hbackedNew (hlocal.commitUpTo m k false)
 
 /-! ### The handler -/
 

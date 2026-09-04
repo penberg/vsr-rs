@@ -273,6 +273,21 @@ theorem commitUpTo_go_proj {γ : Type} (p : Replica Op Output St → γ)
   commitUpTo_go_proj m reply Replica.acks (fun _ => rfl) (fun _ _ => rfl) (fun _ _ => rfl) _ _
 @[simp] theorem commitUpTo_recoveryNonce : (commitUpTo m r n reply).recoveryNonce = r.recoveryNonce :=
   commitUpTo_go_proj m reply Replica.recoveryNonce (fun _ => rfl) (fun _ _ => rfl) (fun _ _ => rfl) _ _
+theorem commitUpTo_go_replies_false (m : Machine Op Output St) :
+    ∀ (n : Nat) (r : Replica Op Output St), (commitUpTo.go m false n r).replies = r.replies
+  | 0, _ => rfl
+  | n + 1, r => by
+    rw [commitUpTo_go_succ]
+    split
+    · rfl
+    · rename_i entry _
+      show (commitUpTo.go m false n (commitOp m r entry).1).replies = r.replies
+      rw [commitUpTo_go_replies_false m n (commitOp m r entry).1]; rfl
+
+@[simp] theorem commitUpTo_replies_false (m : Machine Op Output St) (r : Replica Op Output St) (k : Nat) :
+    (commitUpTo m r k false).replies = r.replies := by
+  unfold commitUpTo; exact commitUpTo_go_replies_false m _ r
+
 @[simp] theorem commitUpTo_chosenVotes : (commitUpTo m r n reply).chosenVotes = r.chosenVotes :=
   commitUpTo_go_proj m reply Replica.chosenVotes (fun _ => rfl) (fun _ _ => rfl) (fun _ _ => rfl) _ _
 
