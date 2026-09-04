@@ -385,9 +385,11 @@ fn run_sender(
             .write_all(line.as_bytes())
             .and_then(|_| stream.write_all(b"\n"))
         {
+            // Drop the stream but do not start the backoff: the peer was
+            // reachable a moment ago, so the next frame retries the connect
+            // right away. If that connect fails, the backoff starts then.
             warn!("lost connection to node {dst}: {err}");
             streams.remove(&dst);
-            last_failure.insert(dst, Instant::now());
         }
     }
 }
