@@ -269,6 +269,12 @@ theorem commitUpTo_go_proj {γ : Type} (p : Replica Op Output St → γ)
   commitUpTo_go_proj m reply Replica.selfId (fun _ => rfl) (fun _ _ => rfl) (fun _ _ => rfl) _ _
 @[simp] theorem commitUpTo_config : (commitUpTo m r n reply).config = r.config :=
   commitUpTo_go_proj m reply Replica.config (fun _ => rfl) (fun _ _ => rfl) (fun _ _ => rfl) _ _
+@[simp] theorem commitUpTo_acks : (commitUpTo m r n reply).acks = r.acks :=
+  commitUpTo_go_proj m reply Replica.acks (fun _ => rfl) (fun _ _ => rfl) (fun _ _ => rfl) _ _
+@[simp] theorem commitUpTo_recoveryNonce : (commitUpTo m r n reply).recoveryNonce = r.recoveryNonce :=
+  commitUpTo_go_proj m reply Replica.recoveryNonce (fun _ => rfl) (fun _ _ => rfl) (fun _ _ => rfl) _ _
+@[simp] theorem commitUpTo_chosenVotes : (commitUpTo m r n reply).chosenVotes = r.chosenVotes :=
+  commitUpTo_go_proj m reply Replica.chosenVotes (fun _ => rfl) (fun _ _ => rfl) (fun _ _ => rfl) _ _
 
 /-- A commit round only commits an entry that exists, so the commit number
 stays within the log. -/

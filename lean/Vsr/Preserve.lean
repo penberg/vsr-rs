@@ -334,6 +334,64 @@ theorem Inv.addNewState {s : System Op Output St} (hinv : Inv s) {r : Replica Op
         obtain ⟨votes, hv⟩ := h3 r hr hnr hpos'
         exact ⟨votes, by rw [← hlnv]; exact hv⟩
 
+/-! ### Commit steps: a replica raising its commit within a backed bound -/
+
+/-- `commitUpTo.go` raises the commit number by at most the fuel. -/
+theorem commitUpTo_go_add_le (m : Machine Op Output St) (reply : Bool) :
+    ∀ (n : Nat) (r : Replica Op Output St),
+      (Replica.commitUpTo.go m reply n r).commitNumber ≤ r.commitNumber + n := by
+  intro n
+  induction n with
+  | zero => intro r; exact Nat.le_refl _
+  | succ n ih =>
+    intro r
+    rw [Replica.commitUpTo_go_succ]
+    split
+    · show (r.panic).commitNumber ≤ r.commitNumber + (n + 1)
+      exact Nat.le_add_right _ _
+    · rename_i entry _
+      have hxc : (if reply then { (Replica.commitOp m r entry).1 with
+          replies := (Replica.commitOp m r entry).1.replies ++ [(Replica.commitOp m r entry).2] }
+        else (Replica.commitOp m r entry).1).commitNumber = r.commitNumber + 1 := by
+        split <;> rfl
+      have hih := ih (if reply then { (Replica.commitOp m r entry).1 with
+          replies := (Replica.commitOp m r entry).1.replies ++ [(Replica.commitOp m r entry).2] }
+        else (Replica.commitOp m r entry).1)
+      rw [hxc] at hih
+      have heq : r.commitNumber + 1 + n = r.commitNumber + (n + 1) := by
+        rw [Nat.add_assoc, Nat.add_comm 1 n]
+      exact heq ▸ hih
+
+theorem commitUpTo_le_max (m : Machine Op Output St) (r : Replica Op Output St) (k : Nat) (reply : Bool) :
+    (Replica.commitUpTo m r k reply).commitNumber ≤ max r.commitNumber k := by
+  unfold Replica.commitUpTo
+  have hih := commitUpTo_go_add_le m reply (k - r.commitNumber) r
+  have hmax : r.commitNumber + (k - r.commitNumber) = max r.commitNumber k := by
+    rcases Nat.le_total r.commitNumber k with h | h
+    · rw [Nat.add_sub_cancel' h, Nat.max_eq_right h]
+    · rw [Nat.sub_eq_zero_of_le h, Nat.add_zero, Nat.max_eq_left h]
+  exact hmax ▸ hih
+
+theorem Backed.downward {s : System Op Output St} {v m n} (h : Backed s v n) (hle : m ≤ n) :
+    Backed s v m := fun i hi => h i (Nat.lt_of_lt_of_le hi hle)
+
+theorem Backed.max {s : System Op Output St} {v a b} (ha : Backed s v a) (hb : Backed s v b) :
+    Backed s v (max a b) := by
+  intro i hi
+  have : i < a ∨ i < b := by omega
+  rcases this with h | h
+  · exact ha i h
+  · exact hb i h
+
+/-- Draining a replica that changed but sent nothing just replaces it. -/
+theorem System.drain_replace {s : System Op Output St} {id : ReplicaId} {r' : Replica Op Output St}
+    (ho : r'.outbox = []) (hp : r'.replies = []) (hc : r'.chosenVotes = none) :
+    s.drain id r' = { s with replicas := s.replicas.set id r' } := by
+  unfold System.drain
+  have : ({ r' with outbox := [], replies := [], chosenVotes := none } : Replica Op Output St) = r' := by
+    rw [← ho, ← hp, ← hc]
+  rw [this, ho, hp, hc]; simp
+
 /-! ### The handler -/
 
 theorem Inv.onGetState {s : System Op Output St} (hinv : Inv s) (id q : ReplicaId) (v : ViewNumber)
