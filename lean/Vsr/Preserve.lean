@@ -761,6 +761,18 @@ theorem Inv.replaceVC {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
     rw [hce]; exact hinv.two
 
 
+theorem System.drain_replaceSend {s : System Op Output St} {id : ReplicaId}
+    {r' : Replica Op Output St} (ho : r'.outbox = []) (hp : r'.replies = []) (hc : r'.chosenVotes = none)
+    (to : ReplicaId) (msg : Message Op) :
+    s.drain id (r'.send to msg) =
+      { s with replicas := s.replicas.set id r', sent := s.sent ++ [(to, msg)] } := by
+  unfold System.drain Replica.send
+  have hcl : ({ { r' with outbox := r'.outbox ++ [(to, msg)] } with
+      outbox := [], replies := [], chosenVotes := none } : Replica Op Output St) = r' := by
+    rw [← ho, ← hp, ← hc]
+  rw [hcl]
+  simp only [ho, hp, hc, List.nil_append, List.append_nil]
+
 /-- A normal backup raising its commit number to a backed bound within its
 log keeps `Inv`. The receiving-side core of `onCommit`, `onPrepare`, and
 `onNewState`. -/
@@ -943,5 +955,65 @@ theorem Inv.onGetState {s : System Op Output St} (hinv : Inv s) (id q : ReplicaI
       have ho : o ≤ r.opNumber := Nat.le_of_not_lt fun h => hg (Or.inr (Or.inr h))
       subst hv
       exact hinv.addNewState hmem hn q ho
+
+/-- The active branch of a catch-up: a replica `X` that moved to view-change
+status and is catching up, then sent a `GetState`. Composes `replaceVC`
+(the status/view change) with `addGetState` (the message). -/
+theorem Inv.catchUpChange {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
+    {X r : Replica Op Output St} (hr : s.replicas[id]? = some r)
+    (hXlog : X.log = r.log) (hXlnv : X.lastNormalView = r.lastNormalView)
+    (hXcommit : X.commitNumber = r.commitNumber) (hXnn : X.status ≠ .normal)
+    (hXnr : X.status ≠ .recovering) (hXself : X.selfId = r.selfId) (hXconf : X.config = r.config)
+    (hXacks : X.acks = r.acks) (hXnonce : X.recoveryNonce = r.recoveryNonce)
+    (hXpanic : X.panicked = false) (hXout : X.outbox = []) (hXrep : X.replies = [])
+    (hXcv : X.chosenVotes = none) (hloc : Replica.LocalInv X)
+    (hvle : r.viewNumber ≤ X.viewNumber) (hnr : r.status ≠ .recovering)
+    (hcp : X.catchingUp = true → id ≠ s.config.primaryId X.viewNumber) :
+    Inv (s.drain id (X.sendGetState r.commitNumber)) := by
+  have hmem := List.mem_of_getElem? hr
+  have hself : r.selfId = id := (hinv.ids id r hr).1
+  have hrconf : r.config = s.config := (hinv.ids id r hr).2
+  have hs0 : Inv (s.drain id X) :=
+    hinv.replaceVC hr hXlog hXlnv hXcommit hvle hXself hXconf hXacks hXnonce hXpanic
+      hXout hXrep hXcv hnr hXnn hXnr
+      (fun hc => by rw [hXself, hself, hXconf, hrconf]; exact hcp hc) hloc
+  have hbelow : ∀ q0 ∈ (s.drain id X).replicas, q0.selfId = X.selfId → X.viewNumber ≤ q0.viewNumber := by
+    intro q0 hq0 hqid
+    obtain ⟨i0, hi0⟩ := List.mem_iff_getElem?.mp hq0
+    have h1 : q0.selfId = i0 := (hs0.ids i0 q0 hi0).1
+    have hi0id : i0 = id := by rw [← h1, hqid, hXself, hself]
+    rw [hi0id] at hi0
+    have hidX : (s.drain id X).replicas[id]? = some X := by
+      rw [System.drain_replace hXout hXrep hXcv]
+      exact List.getElem?_set_self ((List.getElem?_eq_some_iff.mp hr).1)
+    rw [hidX] at hi0; injection hi0 with hq0X; subst hq0X
+    exact Nat.le_refl _
+  have heq : s.drain id (X.sendGetState r.commitNumber) =
+      { (s.drain id X) with sent := (s.drain id X).sent ++
+        [(X.primaryId, (Message.getState X.selfId X.viewNumber r.commitNumber : Message Op))] } := by
+    unfold Replica.sendGetState Replica.sendToPrimary
+    rw [System.drain_replaceSend hXout hXrep hXcv, System.drain_replace hXout hXrep hXcv]
+  rw [heq]
+  exact Inv.addGetState hs0 X.primaryId X.selfId X.viewNumber r.commitNumber hbelow
+
+/-- Draining `r.catchUpWithView v` keeps `Inv`, given the view is not
+behind and this replica is not the new view's primary. -/
+theorem Inv.catchUp {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
+    {r : Replica Op Output St} (hr : s.replicas[id]? = some r)
+    (v : ViewNumber) (hv : r.viewNumber ≤ v) (hnr : r.status ≠ .recovering)
+    (hnp : id ≠ s.config.primaryId v) :
+    Inv (s.drain id (r.catchUpWithView v)) := by
+  have hmem := List.mem_of_getElem? hr
+  have hclean := hinv.clean r hmem
+  have hlocal := hinv.local_ r hmem
+  unfold Replica.catchUpWithView
+  split
+  · rw [System.drain_clean hr (hinv.drained r hmem) hclean.1 hclean.2]; exact hinv
+  · refine hinv.catchUpChange hr rfl rfl rfl (fun h => Status.noConfusion h)
+      (fun h => Status.noConfusion h) rfl rfl rfl rfl (hinv.noPanic r hmem)
+      (hinv.drained r hmem) hclean.1 hclean.2 ?_ hv hnr (fun _ => hnp)
+    refine ⟨hlocal.1, Nat.le_trans hlocal.2.1 hv, ?_, fun _ => rfl, ?_⟩
+    · rintro (hs | hs) <;> exact Status.noConfusion hs
+    · intro hs; exact Status.noConfusion hs
 
 end Vsr
