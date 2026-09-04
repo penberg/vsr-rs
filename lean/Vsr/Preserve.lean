@@ -617,6 +617,141 @@ theorem Inv.commitStep {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
     (by rw [Replica.commitUpTo_chosenVotes]; exact hclean.2)
     hbackedNew (hlocal.commitUpTo m k false)
 
+/-- Adding a `GetState` message keeps `Inv`. It carries no log and is not
+a fragment, an acknowledgement, or any constructor a clause tracks, so it
+is inert everywhere except `MessagesBelowView`, which the sender's view
+being at least the message's discharges. -/
+theorem Inv.addGetState {s : System Op Output St} (hinv : Inv s) (to q : ReplicaId)
+    (v : ViewNumber) (o : OpNumber)
+    (hbelow : ∀ q0 ∈ s.replicas, q0.selfId = q → v ≤ q0.viewNumber) :
+    Inv { s with sent := s.sent ++ [(to, .getState q v o)] } := by
+  generalize hs' : ({ s with sent := s.sent ++ [(to, (.getState q v o : Message Op))] } :
+    System Op Output St) = s'
+  have hse : s'.sent = s.sent ++ [(to, (.getState q v o : Message Op))] := by rw [← hs']
+  have hre : s'.replicas = s.replicas := by rw [← hs']
+  have hste : s'.started = s.started := by rw [← hs']
+  have hce : s'.config = s.config := by rw [← hs']
+  have fS : ∀ x ∈ s.sent, x ∈ s'.sent := fun x h => by rw [hse]; exact List.mem_append_left _ h
+  have fT : ∀ x ∈ s.started, x ∈ s'.started := fun x h => by rw [hste]; exact h
+  have fT' : ∀ x ∈ s'.started, x ∈ s.started := fun x h => by rw [← hste]; exact h
+  -- a fragment of s' is a fragment of s: GetState contributes none
+  have hFrag : ∀ w off log, Frag s' w off log ↔ Frag s w off log := by
+    intro w off log
+    constructor
+    · intro h
+      have : Frag { s with sent := s.sent ++ [(to, (.getState q v o : Message Op))] } w off log := by
+        rw [hs']; exact h
+      rcases Frag.addMessage this with h' | h'
+      · exact h'
+      · nomatch h'
+    · exact Frag.mono fS fT
+  have hHolds : ∀ w i e, Holds s' w i e ↔ Holds s w i e := by
+    intro w i e; constructor
+    · rintro ⟨off, log, hf, hle, hget⟩; exact ⟨off, log, (hFrag ..).mp hf, hle, hget⟩
+    · rintro ⟨off, log, hf, hle, hget⟩; exact ⟨off, log, (hFrag ..).mpr hf, hle, hget⟩
+  have hSentSplit : ∀ {t : ReplicaId} {msg : Message Op}, Sent s' t msg →
+      Sent s t msg ∨ (t, msg) = (to, (.getState q v o : Message Op)) := by
+    intro t msg h
+    have : Sent { s with sent := s.sent ++ [(to, (.getState q v o : Message Op))] } t msg := by
+      rw [hs']; exact h
+    exact Sent.addMessage this
+  have hSentOf : ∀ {t : ReplicaId} {msg : Message Op}, Sent s t msg → Sent s' t msg := by
+    intro t msg h; rw [Sent, hse]; exact List.mem_append_left _ h
+  have hAcked : ∀ w i qq, Acked s' w i qq → Acked s w i qq := by
+    intro w i qq h
+    rcases h with h | ⟨t0, o0, hs0, hlt0⟩
+    · left; rw [hce] at h; exact h
+    · rcases hSentSplit hs0 with h' | h'
+      · exact Or.inr ⟨t0, o0, h', hlt0⟩
+      · simp at h'
+  have hQuorum : ∀ w i, QuorumAcked s' w i → QuorumAcked s w i := by
+    intro w i ⟨Q, hnd, hlen, hq⟩
+    refine ⟨Q, hnd, by rw [hce] at hlen; exact hlen, fun qq hqq => ?_⟩
+    obtain ⟨hlt, ha⟩ := hq qq hqq
+    exact ⟨by rw [← hce]; exact hlt, hAcked w i qq ha⟩
+  have hComm : ∀ w i e, Committed s' w i e → Committed s w i e :=
+    fun w i e ⟨hh, hqa⟩ => ⟨(hHolds ..).mp hh, hQuorum w i hqa⟩
+  have hBackedFwd : ∀ w k, Backed s w k → Backed s' w k := fun w k => Backed.mono fS fT hce
+  refine {
+    noPanic := fun r hr => hinv.noPanic r (hre ▸ hr)
+    ids := fun i x hx => ⟨(hinv.ids i x (hre ▸ hx)).1, hce ▸ (hinv.ids i x (hre ▸ hx)).2⟩
+    local_ := fun x hx => hinv.local_ x (hre ▸ hx)
+    drained := fun x hx => hinv.drained x (hre ▸ hx)
+    wf := ?_, oneLog := ?_, backed := ?_, survives := ?_, acks := ?_
+    catching := fun x hx hc => hinv.catching x (hre ▸ hx) hc
+    acksHold := ?_, toOthers := ?_, longest := ?_, chosen := ?_, votesCover := ?_,
+    belowView := ?_, recoveryCovers := ?_, covered := ?_
+    agree := fun z hz w hw h i e e' he he' => hinv.agree z (hre ▸ hz) w (hre ▸ hw) h i e e' he he'
+    startedViews := ?_
+    clean := fun x hx => hinv.clean x (hre ▸ hx)
+    two := by show 2 ≤ s'.config.replicaCount; rw [hce]; exact hinv.two }
+  · intro x hx
+    rcases hSentSplit hx with h | h
+    · exact hinv.wf x h
+    · injection h with _ h2; rw [h2]; trivial
+  · exact ⟨fun w i e e' h h' => hinv.oneLog.1 w i e e' ((hHolds ..).mp h) ((hHolds ..).mp h'),
+      fun z hz i e e' he hh => hinv.oneLog.2 z (hre ▸ hz) i e e' he ((hHolds ..).mp hh)⟩
+  · refine ⟨fun z hz => hBackedFwd _ _ (hinv.backed.1 z (hre ▸ hz)), fun t msg hm => ?_⟩
+    rcases hSentSplit hm with h | h
+    · exact MsgBacked.mono fS fT hce (hinv.backed.2 t msg h)
+    · injection h with _ h2; rw [h2]; trivial
+  · intro v' i e hc w hlt
+    obtain ⟨h1, h2, h3, h4, h5, h6, h7⟩ := hinv.survives v' i e (hComm _ _ _ hc) w hlt
+    refine ⟨fun t log o0 k hs => ?_, fun t v'' r0 log o0 k hs => ?_, fun t n r0 st hs => ?_,
+      fun t log a b k hs ha => ?_, fun t c n op k hs => ?_,
+      fun v'' votes qq vote hstd hin hlv => h6 v'' votes qq vote (fT' _ hstd) hin hlv,
+      fun z hz => h7 z (hre ▸ hz)⟩
+    · rcases hSentSplit hs with h | h; exact h1 t log o0 k h; simp at h
+    · rcases hSentSplit hs with h | h; exact h2 t v'' r0 log o0 k h; simp at h
+    · rcases hSentSplit hs with h | h; exact h3 t n r0 st h; simp at h
+    · rcases hSentSplit hs with h | h; exact h4 t log a b k h ha; simp at h
+    · rcases hSentSplit hs with h | h; exact h5 t c n op k h; simp at h
+  · intro z hz hzn hzp oa hoa
+    obtain ⟨c1, c2⟩ := hinv.acks z (hre ▸ hz) hzn hzp oa hoa
+    exact ⟨c1, fun qq hq => (c2 qq hq).imp (fun h => h) (fun ⟨t, ht⟩ => ⟨t, hSentOf ht⟩)⟩
+  · intro t v0 o0 qq hs z hz
+    rcases hSentSplit hs with h | h
+    · exact hinv.acksHold t v0 o0 qq h z (hre ▸ hz)
+    · simp at h
+  · intro t msg hs
+    rcases hSentSplit hs with h | h
+    · have := hinv.toOthers t msg h; revert this; cases msg <;> simp_all
+    · injection h with _ h2; rw [h2]; trivial
+  · intro p hp hpn hpp
+    obtain ⟨f1, f2, f3⟩ := hinv.longest p (hre ▸ hp) hpn hpp
+    exact ⟨fun off log hf => f1 off log ((hFrag ..).mp hf), fun z hz hzv hzr => f2 z (hre ▸ hz) hzv hzr,
+      fun t o0 qq hs => by rcases hSentSplit hs with h | h; exact f3 t o0 qq h; simp at h⟩
+  · intro t v0 log o0 k hs
+    rcases hSentSplit hs with h | h
+    · obtain ⟨votes, best, hv, hq, hnd, hb, hpre⟩ := hinv.chosen t v0 log o0 k h
+      exact ⟨votes, best, fT _ hv, by rw [hce]; exact hq, hnd, hb, hpre⟩
+    · simp at h
+  · intro v0 votes hv qq vote hin t o0 hs
+    rcases hSentSplit hs with h | h
+    · exact hinv.votesCover v0 votes (fT' _ hv) qq vote hin t o0 h
+    · simp at h
+  · intro t msg hs z hz
+    rcases hSentSplit hs with h | h
+    · exact hinv.belowView t msg h z (hre ▸ hz)
+    · injection h with h1 h2; subst h1; subst h2
+      intro hq; exact hbelow z (hre ▸ hz) hq
+  · intro z hz hzr t v0 nonce r0 st hs hnhyp t' o0 hs'2
+    rcases hSentSplit hs with h | h
+    · rcases hSentSplit hs'2 with h' | h'
+      · exact hinv.recoveryCovers z (hre ▸ hz) hzr t v0 nonce r0 st h hnhyp t' o0 h'
+      · simp at h'
+    · simp at h
+  · intro z hz i hi
+    obtain ⟨e, he⟩ := hinv.covered z (hre ▸ hz) i hi
+    exact ⟨e, (hHolds ..).mpr he⟩
+  · obtain ⟨g1, g2, g3⟩ := hinv.startedViews
+    refine ⟨fun w votes hv => ?_,
+      fun w off log hf hpos => (g2 w off log ((hFrag ..).mp hf) hpos).imp (fun votes hh => fT _ hh),
+      fun z hz hzr hzv => (g3 z (hre ▸ hz) hzr hzv).imp (fun votes hh => fT _ hh)⟩
+    obtain ⟨t, log, o0, k, h⟩ := g1 w votes (fT' _ hv)
+    exact ⟨t, log, o0, k, hSentOf h⟩
+
+
 /-! ### The handler -/
 
 theorem Inv.onGetState {s : System Op Output St} (hinv : Inv s) (id q : ReplicaId) (v : ViewNumber)
