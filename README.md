@@ -207,6 +207,24 @@ scripts/simulate --report          # the runs of the current commit
 scripts/simulate --report --all    # every commit ever run
 ```
 
+### Coverage
+
+`scripts/coverage` runs a batch of random seeds under LLVM instrumentation
+to show which lines of the implementation the simulator reaches. It needs
+the LLVM tools of the toolchain, once:
+
+```console
+rustup component add llvm-tools-preview
+scripts/coverage --runs 100
+```
+
+It prints a per-file summary and writes an HTML report to
+`target/coverage/html/index.html`:
+
+```console
+open target/coverage/html/index.html      # xdg-open on Linux
+```
+
 ### Interactive simulation
 
 The same simulator has a terminal viewer that draws the replicas, every

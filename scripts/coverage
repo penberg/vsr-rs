@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Runs the simulator instrumented for coverage and reports which lines of
+vsr-rs the runs reached.
+
+Each run is a fresh seed, alternating between --lite and full swarm
+configurations the way scripts/simulate does, so the report answers what the
+simulator exercises rather than what the unit tests do. The runs write LLVM
+profiles that are merged into a single report.
+
+    scripts/coverage [--runs N] [--concurrency N] [--out DIR]
+                     [--all-files] [SIMULATOR ARGS...]
+
+Arguments the simulator understands are passed through, so a run can be
+narrowed the same way as by hand:
+
+    scripts/coverage --runs 50 -- --replica-crash-probability 0
+
+Requires the LLVM tools that ship with the toolchain:
+
+    rustup component add llvm-tools-preview
+
+Reports are written to OUT/report.txt (annotated sources) and
+OUT/html/index.html, with the per-file summary printed to the terminal.
+The instrumented build uses its own target directory under OUT, so it does
+not invalidate the normal build cache.
+"""
+
+import argparse
+import os
+import random
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+
+def git(*args):
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def llvm_tool(name):
+    """Path to an LLVM tool from the active toolchain, or exits with the
+    rustup command that installs them."""
+    sysroot = subprocess.run(["rustc", "--print", "sysroot"], check=True, capture_output=True, text=True).stdout.strip()
+    version = subprocess.run(["rustc", "-vV"], check=True, capture_output=True, text=True).stdout
+    host = next(line[len("host: "):] for line in version.splitlines() if line.startswith("host: "))
+    tool = Path(sysroot) / "lib" / "rustlib" / host / "bin" / name
+    if not tool.exists():
+        sys.exit(f"{name} is missing; install it with: rustup component add llvm-tools-preview")
+    return str(tool)
+
+
+class Sweep:
+    """Runs `runs` seeds on `concurrency` workers, each writing its own
+    profile."""
+
+    def __init__(self, binary, out, profiles, args, runs):
+        self.binary = binary
+        self.out = out
+        self.profiles = profiles
+        self.args = args
+        self.lock = threading.Lock()
+        self.remaining = runs
+        self.total = runs
+        self.failures = []
+
+    def take(self):
+        """The number of the next run, or None once they are all taken."""
+        with self.lock:
+            if self.remaining == 0:
+                return None
+            self.remaining -= 1
+            return self.total - self.remaining
+
+    def run_one(self, run):
+        seed = random.getrandbits(64)
+        mode, mode_args = ("lite", ["--lite"]) if seed % 2 == 0 else ("full", [])
+        args = mode_args + self.args + [str(seed)]
+        log = self.out / "logs" / f"{seed}.log"
+        environment = dict(
+            os.environ,
+            LLVM_PROFILE_FILE=str(self.profiles / f"vsr-simulator-{run}-%p-%m.profraw"),
+            RUST_BACKTRACE="full",
+        )
+        with log.open("w") as file:
+            status = subprocess.run([self.binary, *args], stdout=file, stderr=subprocess.STDOUT, env=environment).returncode
+        command = f"{self.binary} {' '.join(args)}"
+        with self.lock:
+            if status == 0:
+                log.unlink(missing_ok=True)
+                print(f"run {run}/{self.total}: {mode} seed={seed} passed", flush=True)
+            else:
+                self.failures.append(command)
+                print(f"run {run}/{self.total}: {mode} seed={seed} FAILED (exit {status}, log: {log})", file=sys.stderr, flush=True)
+
+    def worker(self):
+        while True:
+            run = self.take()
+            if run is None:
+                return
+            self.run_one(run)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--runs", type=int, default=10, help="how many seeds to run (default 10)")
+    parser.add_argument("--concurrency", type=int, default=os.cpu_count(), help="parallel runs (default: cores)")
+    parser.add_argument("--out", default="target/coverage", help="profiles and reports directory")
+    parser.add_argument("--all-files", action="store_true", help="also report the simulator's own sources")
+    parser.add_argument("simulator_args", nargs=argparse.REMAINDER, help="arguments passed on to the simulator")
+    args = parser.parse_args()
+
+    if args.runs < 1:
+        sys.exit("--runs must be at least 1")
+    simulator_args = args.simulator_args
+    if simulator_args and simulator_args[0] == "--":
+        simulator_args = simulator_args[1:]
+
+    os.chdir(git("rev-parse", "--show-toplevel"))
+    llvm_profdata = llvm_tool("llvm-profdata")
+    llvm_cov = llvm_tool("llvm-cov")
+
+    out = Path(args.out)
+    profiles = out / "profiles"
+    target = out / "target"
+    binary = target / "debug" / "vsr-simulator"
+    profdata = out / "vsr-simulator.profdata"
+    report = out / "report.txt"
+    html = out / "html"
+
+    for directory in (profiles, html, out / "logs"):
+        directory.mkdir(parents=True, exist_ok=True)
+    for stale in profiles.glob("*.profraw"):
+        stale.unlink()
+    profdata.unlink(missing_ok=True)
+    report.unlink(missing_ok=True)
+
+    # The instrumented build gets its own target directory: -Cinstrument-coverage
+    # would otherwise rebuild the whole tree back and forth with the normal one.
+    # Build scripts and proc macros are instrumented too and dump their own
+    # profiles when cargo runs them, so those go to a directory of their own
+    # instead of the working directory, and are never merged.
+    build = dict(
+        os.environ,
+        CARGO_TARGET_DIR=str(target),
+        RUSTFLAGS="-Cinstrument-coverage",
+        LLVM_PROFILE_FILE=str(target / "build-profiles" / "%p-%m.profraw"),
+    )
+    subprocess.run(["cargo", "build", "-p", "vsr-simulator"], check=True, env=build)
+
+    print(f"running {args.runs} seeds with {args.concurrency} workers", flush=True)
+    sweep = Sweep(binary=str(binary), out=out, profiles=profiles, args=simulator_args, runs=args.runs)
+    threads = [threading.Thread(target=sweep.worker, daemon=True) for _ in range(args.concurrency)]
+    for thread in threads:
+        thread.start()
+    try:
+        for thread in threads:
+            thread.join()
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+    raw = sorted(str(path) for path in profiles.glob("*.profraw"))
+    if not raw:
+        sys.exit("no profiles were written; did the runs start at all?")
+    subprocess.run([llvm_profdata, "merge", "-sparse", *raw, "-o", str(profdata)], check=True)
+
+    # The toolchain's and the dependencies' own sources are never the subject.
+    ignore = r"\.cargo|\.rustup|/rustlib/|/usr/"
+    if not args.all_files:
+        ignore += "|/simulator/"
+    common = [str(binary), "--instr-profile", str(profdata), f"--ignore-filename-regex={ignore}"]
+    print()
+    subprocess.run([llvm_cov, "report", *common], check=True)
+    with report.open("w") as file:
+        subprocess.run([llvm_cov, "show", *common, "--show-line-counts-or-regions"], check=True, stdout=file)
+    subprocess.run([llvm_cov, "show", *common, "--format", "html", "--output-dir", str(html)], check=True)
+
+    print()
+    print(f"text report: {report}")
+    print(f"html report: {html}/index.html")
+    if sweep.failures:
+        print()
+        print(f"{len(sweep.failures)} of {args.runs} runs failed; reproduce with:", file=sys.stderr)
+        for command in sweep.failures:
+            print(f"  {command}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
