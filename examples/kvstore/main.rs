@@ -444,7 +444,8 @@ fn parse_command(line: &str) -> Result<Option<Command>, String> {
 }
 
 /// Serves one client connection: one command at a time, each answered once
-/// the replicated store has executed it.
+/// the replicated store has executed it. However the connection ends, the
+/// event loop is told it is gone.
 fn run_client_connection(
     stream: TcpStream,
     connection: u64,
@@ -453,28 +454,62 @@ fn run_client_connection(
     let (respond_tx, respond_rx) = channel::<String>();
     let mut writer = stream.try_clone()?;
     let reader = BufReader::new(stream);
+    // A read or write error breaks out of the loop rather than returning, or
+    // it would carry us past the Event::Disconnect below and the event loop
+    // would keep this connection's client for the life of the process.
+    let mut outcome = Ok(());
     for line in reader.lines() {
-        let line = line?;
-        let command = match parse_command(&line) {
-            Ok(None) => continue,
-            Ok(Some(command)) => command,
-            Err(response) => {
-                writer.write_all(format!("{response}\r\n").as_bytes())?;
-                continue;
-            }
-        };
-        let _ = events.send(Event::Command {
-            connection,
-            command,
-            respond: respond_tx.clone(),
+        let step = line.and_then(|line| {
+            run_client_command(
+                &line,
+                &mut writer,
+                connection,
+                &events,
+                &respond_tx,
+                &respond_rx,
+            )
         });
-        let Ok(response) = respond_rx.recv() else {
-            break;
-        };
-        writer.write_all(response.as_bytes())?;
+        match step {
+            Ok(true) => continue,
+            Ok(false) => break,
+            Err(err) => {
+                outcome = Err(err);
+                break;
+            }
+        }
     }
     let _ = events.send(Event::Disconnect(connection));
-    Ok(())
+    outcome
+}
+
+/// Runs one command from a client connection. Returns false once the
+/// connection should be closed.
+fn run_client_command(
+    line: &str,
+    writer: &mut TcpStream,
+    connection: u64,
+    events: &Sender<Event>,
+    respond_tx: &Sender<String>,
+    respond_rx: &Receiver<String>,
+) -> std::io::Result<bool> {
+    let command = match parse_command(line) {
+        Ok(None) => return Ok(true),
+        Ok(Some(command)) => command,
+        Err(response) => {
+            writer.write_all(format!("{response}\r\n").as_bytes())?;
+            return Ok(true);
+        }
+    };
+    let _ = events.send(Event::Command {
+        connection,
+        command,
+        respond: respond_tx.clone(),
+    });
+    let Ok(response) = respond_rx.recv() else {
+        return Ok(false);
+    };
+    writer.write_all(response.as_bytes())?;
+    Ok(true)
 }
 
 fn run_client_acceptor(listener: TcpListener, node_id: ReplicaID, events: Sender<Event>) {
