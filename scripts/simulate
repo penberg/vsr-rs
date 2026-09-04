@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""Runs the simulator with random seeds on every core until a time budget
+expires, or reports on the runs so far.
+
+Each run is a fresh seed, alternating between --lite and full swarm
+configurations. A run that exits non-zero or exceeds the timeout is a
+failure; its log is kept and its seed is printed so it can be reproduced.
+
+    scripts/simulate [--budget DURATION] [--timeout DURATION]
+                     [--concurrency N] [--out DIR]
+    scripts/simulate --report [--all] [--out DIR]
+
+Durations take the same suffixes as timeout(1): 30s, 10m, 2h.
+
+Results are appended as one JSON line per run to OUT/results.jsonl, with
+the commit, seed, mode, outcome, duration, and the command to reproduce.
+The file keeps every run ever made, so a summary only counts the runs of
+one commit: the one just simulated, or for --report the current HEAD,
+including runs made with uncommitted changes on top of it. --all reports
+every commit in the file.
+"""
+
+import argparse
+import json
+import os
+import random
+import signal
+import subprocess
+import sys
+import threading
+import time
+from collections import Counter
+from pathlib import Path
+
+
+def parse_duration(text):
+    """Seconds for a timeout(1)-style duration: 30s, 10m, 2h, or plain seconds."""
+    units = {"s": 1, "m": 60, "h": 3600}
+    if text and text[-1] in units:
+        return int(text[:-1]) * units[text[-1]]
+    return int(text)
+
+
+def git(*args):
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def current_commit():
+    """HEAD, with -dirty appended if the working tree differs from it."""
+    commit = git("rev-parse", "HEAD")
+    dirty = subprocess.run(["git", "diff", "--quiet", "HEAD"]).returncode != 0
+    return commit + "-dirty" if dirty else commit
+
+
+def read_runs(results, commit=None):
+    """The records in the results file, all of them or those of one commit.
+    A commit matches its own runs and those made with uncommitted changes on
+    top of it."""
+    if not results.exists():
+        return []
+    with results.open() as file:
+        runs = (json.loads(line) for line in file if line.strip())
+        if commit is None:
+            return list(runs)
+        return [run for run in runs if run["commit"].startswith(commit)]
+
+
+def summarize(results, commit=None):
+    """Prints the runs per commit and mode and the commands to reproduce
+    the failures. Returns whether every run shown passed."""
+    runs = read_runs(results, commit)
+    if not runs:
+        if commit is None:
+            print(f"no results in {results}")
+        else:
+            print(f"no runs of commit {commit[:7]} in {results}; --all shows every commit")
+        return True
+    if commit is None:
+        print("runs per commit and mode:")
+    else:
+        print(f"runs of commit {commit[:7]} per mode (--all shows every commit):")
+    counts = Counter()
+    for run in runs:
+        short = run["commit"][:7] + ("-dirty" if run["commit"].endswith("-dirty") else "")
+        counts[(short, run["mode"], run["ok"])] += 1
+    for (short, mode, ok), count in sorted(counts.items()):
+        print(f"  {short:13} {mode:4} {count:8} {'passed' if ok else 'FAILED'}")
+    failures = [run for run in runs if not run["ok"]]
+    print(f"total: {len(runs)} runs, {len(failures)} failed")
+    if failures:
+        print("reproduce with:")
+        for run in failures:
+            short = run["commit"][:7] + ("-dirty" if run["commit"].endswith("-dirty") else "")
+            print(f"  {run['command']}   (commit {short})")
+    return not failures
+
+
+class Sweep:
+    """Runs seeds on `concurrency` workers until the deadline."""
+
+    def __init__(self, binary, out, commit, timeout, deadline):
+        self.binary = binary
+        self.out = out
+        self.commit = commit
+        self.timeout = timeout
+        self.deadline = deadline
+        self.results = out / "results.jsonl"
+        self.lock = threading.Lock()
+        self.stop = threading.Event()
+        self.running = set()
+
+    def record(self, seed, mode, args, status, seconds):
+        ok = status == 0
+        record = {
+            "commit": self.commit,
+            "seed": seed,
+            "mode": mode,
+            "ok": ok,
+            "exit": status,
+            "seconds": seconds,
+            "command": f"cargo run --release -p vsr-simulator -- {' '.join(args + [str(seed)])}".replace("  ", " "),
+        }
+        with self.lock:
+            with self.results.open("a") as file:
+                file.write(json.dumps(record) + "\n")
+
+    def run_one(self):
+        seed = random.getrandbits(64)
+        mode, args = ("lite", ["--lite"]) if seed % 2 == 0 else ("full", [])
+        log = self.out / "logs" / f"{seed}.log"
+        start = time.monotonic()
+        with log.open("w") as file:
+            process = subprocess.Popen([self.binary, *args, str(seed)], stdout=file, stderr=subprocess.STDOUT)
+            with self.lock:
+                self.running.add(process)
+            try:
+                process.wait(timeout=self.timeout)
+                status = process.returncode
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                status = 124
+            finally:
+                with self.lock:
+                    self.running.discard(process)
+        seconds = int(time.monotonic() - start)
+        if self.stop.is_set() and status != 0:
+            log.unlink(missing_ok=True)
+            return  # killed by the interrupt, not a failure
+        command = f"{self.binary} {' '.join(args + [str(seed)])}"
+        if status == 0:
+            log.unlink(missing_ok=True)
+        elif status == 124:
+            print(f"TIMEOUT after {self.timeout}s: {command} (log: {log})", file=sys.stderr)
+        else:
+            print(f"FAILED (exit {status}): {command} (log: {log})", file=sys.stderr)
+        self.record(seed, mode, args, status, seconds)
+
+    def worker(self):
+        while not self.stop.is_set() and time.monotonic() < self.deadline:
+            self.run_one()
+
+    def interrupt(self):
+        self.stop.set()
+        with self.lock:
+            for process in list(self.running):
+                process.kill()
+
+
+def main():
+    # A report piped into head must end quietly.
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--budget", default="60m", help="how long to keep starting runs (default 60m)")
+    parser.add_argument("--timeout", default="10m", help="how long one run may take (default 10m)")
+    parser.add_argument("--concurrency", type=int, default=os.cpu_count(), help="parallel runs (default: cores)")
+    parser.add_argument("--out", default="target/simulate", help="results and logs directory")
+    parser.add_argument("--report", action="store_true", help="summarize the results so far instead of running")
+    parser.add_argument("--all", action="store_true", help="with --report: every commit, not just HEAD")
+    args = parser.parse_args()
+
+    os.chdir(git("rev-parse", "--show-toplevel"))
+    out = Path(args.out)
+    results = out / "results.jsonl"
+
+    if args.report:
+        ok = summarize(results, None if args.all else git("rev-parse", "HEAD"))
+        sys.exit(0 if ok else 1)
+
+    subprocess.run(["cargo", "build", "--release", "-p", "vsr-simulator"], check=True)
+    (out / "logs").mkdir(parents=True, exist_ok=True)
+    commit = current_commit()
+    budget = parse_duration(args.budget)
+    sweep = Sweep(
+        binary="./target/release/vsr-simulator",
+        out=out,
+        commit=commit,
+        timeout=parse_duration(args.timeout),
+        deadline=time.monotonic() + budget,
+    )
+    print(f"simulating commit {commit} with {args.concurrency} workers for {args.budget} (timeout {args.timeout} per run)")
+    print(f"results: {results}")
+
+    threads = [threading.Thread(target=sweep.worker, daemon=True) for _ in range(args.concurrency)]
+    for thread in threads:
+        thread.start()
+    try:
+        for thread in threads:
+            thread.join()
+    except KeyboardInterrupt:
+        sweep.interrupt()
+        for thread in threads:
+            thread.join()
+        print("\ninterrupted", file=sys.stderr)
+        summarize(results, commit)
+        sys.exit(130)
+
+    print()
+    sys.exit(0 if summarize(results, commit) else 1)
+
+
+if __name__ == "__main__":
+    main()

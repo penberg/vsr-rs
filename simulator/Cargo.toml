@@ -1,0 +1,33 @@
+[package]
+name = "vsr-simulator"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic simulator for vsr-rs"
+publish = false
+default-run = "vsr-simulator"
+
+[lib]
+name = "vsr_simulator"
+path = "lib.rs"
+
+[[bin]]
+name = "vsr-simulator"
+path = "main.rs"
+
+[[bin]]
+name = "vsr-simulator-tui"
+path = "tui.rs"
+
+[[test]]
+name = "simulator_tests"
+path = "simulator_tests.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.9.1"
+log = "0.4.17"
+rand = "0.8.5"
+rand_chacha = "0.3.1"
+ratatui = "0.29"
+vsr-rs = { path = ".." }
