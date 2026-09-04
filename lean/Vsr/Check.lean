@@ -170,13 +170,15 @@ def primaryMessagesToOthers (s : System Op Output St) : Bool :=
     | _ => true
 
 /-- The primary of view `v`, while normal in `v`, holds the longest log of
-the view: every fragment of `v` and every op acknowledged in `v` is within
-its log. -/
+the view: every fragment of `v`, every log of a replica whose last normal
+view is `v`, and every op acknowledged in `v` is within its log. -/
 def primaryLongest (s : System Op Output St) : Bool :=
   s.replicas.all fun p =>
     !(p.status == .normal && p.isPrimary) ||
     ((fragments s).all fun (v, off, entries) =>
       v != p.viewNumber || decide (off + entries.length ≤ p.log.length)) &&
+    (s.replicas.all fun q =>
+      q.lastNormalView != p.viewNumber || q.status == .recovering || decide (q.log.length ≤ p.log.length)) &&
     (s.sent.all fun (_, msg) =>
       match msg with
       | .prepareOk v o _ => v != p.viewNumber || decide (o ≤ p.log.length)
@@ -249,6 +251,33 @@ def recoveryCoversAcks (s : System Op Output St) : Bool :=
           | _ => true
       | _ => true
 
+/-- Every entry a replica holds is covered by a message fragment of its
+last normal view: nothing is in a log that was not sent. -/
+def covered (s : System Op Output St) : Bool :=
+  let msgFragments := (fragments s).take ((fragments s).length - s.replicas.length)
+  s.replicas.all fun r => (List.range r.log.length).all fun i =>
+    msgFragments.any fun (v, off, entries) =>
+      v == r.lastNormalView && decide (off ≤ i) && decide (i < off + entries.length)
+
+/-- Two replicas with the same last normal view agree wherever their logs
+overlap. -/
+def replicasAgree (s : System Op Output St) : Bool :=
+  s.replicas.all fun r => s.replicas.all fun q =>
+    r.lastNormalView != q.lastNormalView ||
+    (List.range (min r.log.length q.log.length)).all fun i => r.log[i]? == q.log[i]?
+
+/-- Every started view has a `StartView` message, and every view above 0
+that anything refers to was started. -/
+def startedViews (s : System Op Output St) : Bool :=
+  (s.started.all fun (v, _) => s.sent.any fun (_, msg) =>
+    match msg with
+    | .startView v' _ _ _ => v' == v
+    | _ => false) &&
+  (((fragments s).take ((fragments s).length - s.replicas.length)).all fun (v, _, _) =>
+    v == 0 || s.started.any fun (v', _) => v' == v) &&
+  (s.replicas.all fun r => r.status == .recovering || r.lastNormalView == 0 ||
+    s.started.any fun (v', _) => v' == r.lastNormalView)
+
 /-! ### Candidates: layer 5, committed entries cross view changes -/
 
 /-- Whatever `r` has committed is held, at its index, by every log of a
@@ -305,6 +334,9 @@ def all (m : Machine Op Output St) (s : System Op Output St) : List (String × B
     ("acks_hold", acksHold s),
     ("primary_messages_to_others", primaryMessagesToOthers s),
     ("primary_longest", primaryLongest s),
+    ("covered", covered s),
+    ("replicas_agree", replicasAgree s),
+    ("started_views", startedViews s),
     ("start_view_chosen", startViewChosen s),
     ("started_votes_cover", startedVotesCover s),
     ("votes_cover", votesCover s),

@@ -66,19 +66,22 @@ committed in a view no later than `v`, with the entry view `v` holds. -/
 def Backed (s : System Op Output St) (v : ViewNumber) (k : Nat) : Prop :=
   ∀ i < k, ∃ e v', v' ≤ v ∧ Committed s v' i e ∧ Holds s v i e
 
+/-- The commit number a message carries is backed. A `DoViewChange` vote
+is judged by its last normal view. -/
+def MsgBacked (s : System Op Output St) : Message Op → Prop
+  | .prepare v _ _ _ _ k => Backed s v k
+  | .commit v k => Backed s v k
+  | .newState v _ _ _ k => Backed s v k
+  | .startView v _ _ k => Backed s v k
+  | .doViewChange _ _ l _ _ k => Backed s l k
+  | .recoveryResponse v _ _ (some st) => Backed s v st.commitNumber
+  | _ => True
+
 /-- Layer four. Every replica's commit number, and every commit number a
 message carries, is backed. -/
 def CommitsBacked (s : System Op Output St) : Prop :=
   (∀ r ∈ s.replicas, Backed s r.lastNormalView r.commitNumber) ∧
-  (∀ to (msg : Message Op), Sent s to msg →
-    match msg with
-    | .prepare v _ _ _ _ k => Backed s v k
-    | .commit v k => Backed s v k
-    | .newState v _ _ _ k => Backed s v k
-    | .startView v _ _ k => Backed s v k
-    | .doViewChange _ _ l _ _ k => Backed s l k
-    | .recoveryResponse v _ _ (some st) => Backed s v st.commitNumber
-    | _ => True)
+  (∀ to (msg : Message Op), Sent s to msg → MsgBacked s msg)
 
 /-- Layer five. Whatever was committed in view `v'` is held, at its index,
 by every whole log of a later view, by every `NewState` segment of a later
@@ -133,7 +136,38 @@ within its log. -/
 def PrimaryLongest (s : System Op Output St) : Prop :=
   ∀ p ∈ s.replicas, p.status = .normal → p.isPrimary = true →
     (∀ off log, Frag s p.viewNumber off log → off + log.length ≤ p.log.length) ∧
+    (∀ q ∈ s.replicas, q.lastNormalView = p.viewNumber → q.status ≠ .recovering →
+      q.log.length ≤ p.log.length) ∧
     (∀ to o q, Sent s to (.prepareOk p.viewNumber o q) → o ≤ p.log.length)
+
+/-- Every entry a replica holds is covered by a message fragment of its
+last normal view: nothing is in a log that was not sent. -/
+def Covered (s : System Op Output St) : Prop :=
+  ∀ r ∈ s.replicas, ∀ i, i < r.log.length → ∃ e, Holds s r.lastNormalView i e
+
+/-- Two replicas with the same last normal view agree wherever their logs
+overlap. -/
+def ReplicasAgree (s : System Op Output St) : Prop :=
+  ∀ r ∈ s.replicas, ∀ q ∈ s.replicas, r.lastNormalView = q.lastNormalView →
+    ∀ (i : Nat) (e e' : LogEntry Op), r.log[i]? = some e → q.log[i]? = some e' → e = e'
+
+/-- Every started view has a `StartView` message; every view above 0 that
+a fragment belongs to, or that a replica not recovering was last normal
+in, was started. -/
+def StartedViews (s : System Op Output St) : Prop :=
+  (∀ v votes, (v, votes) ∈ s.started → ∃ to log o k, Sent s to (.startView v log o k)) ∧
+  (∀ v off log, Frag s v off log → 0 < v → ∃ votes, (v, votes) ∈ s.started) ∧
+  (∀ r ∈ s.replicas, r.status ≠ .recovering → 0 < r.lastNormalView →
+    ∃ votes, (r.lastNormalView, votes) ∈ s.started)
+
+/-- Between steps a replica has handed over its replies and the view it
+started, as it has its outbox (`Drained`). -/
+def Clean (s : System Op Output St) : Prop :=
+  ∀ r ∈ s.replicas, r.replies = [] ∧ r.chosenVotes = none
+
+/-- A cluster of one replica never sends, so nothing about it can be said
+through `sent`; the invariant is for clusters of at least two. -/
+def TwoReplicas (s : System Op Output St) : Prop := 2 ≤ s.config.replicaCount
 
 /-- The log a `StartView` carries extends the log its view was started
 from: the best of a quorum of votes, by (last normal view, length). -/
@@ -189,6 +223,11 @@ structure Inv (s : System Op Output St) : Prop where
   votesCover : StartedVotesCover s
   belowView : MessagesBelowView s
   recoveryCovers : RecoveryCoversAcks s
+  covered : Covered s
+  agree : ReplicasAgree s
+  startedViews : StartedViews s
+  clean : Clean s
+  two : TwoReplicas s
 
 /-! ### Monotonicity: facts stated through `sent` never go away -/
 
@@ -260,7 +299,8 @@ theorem Holds.init {config : Config} {sm : St} {v i} {e : LogEntry Op}
   let ⟨_, _, hf, _, _⟩ := h
   Frag.init hf
 
-theorem Inv.init (config : Config) (sm : St) : Inv (System.init config sm : System Op Output St) where
+theorem Inv.init (config : Config) (sm : St) (htwo : 2 ≤ config.replicaCount) :
+    Inv (System.init config sm : System Op Output St) where
   noPanic := by
     intro r hr
     simp only [System.init, List.mem_map] at hr
@@ -305,7 +345,15 @@ theorem Inv.init (config : Config) (sm : St) : Inv (System.init config sm : Syst
     simp [Replica.new] at hc
   acksHold := fun _ _ _ _ h => (Sent.init h).elim
   toOthers := fun _ _ h => (Sent.init h).elim
-  longest := fun _ _ _ _ => ⟨fun _ _ hf => (Frag.init hf).elim, fun _ _ _ h => (Sent.init h).elim⟩
+  longest := by
+    unfold PrimaryLongest
+    intro p hp _ _
+    refine ⟨fun _ _ hf => (Frag.init hf).elim, ?_, fun _ _ _ h => (Sent.init h).elim⟩
+    intro q hq _ _
+    simp only [System.init, List.mem_map] at hp hq
+    obtain ⟨_, _, rfl⟩ := hp
+    obtain ⟨_, _, rfl⟩ := hq
+    exact Nat.le_refl _
   chosen := fun _ _ _ _ _ h => (Sent.init h).elim
   votesCover := by
     unfold StartedVotesCover
@@ -313,6 +361,31 @@ theorem Inv.init (config : Config) (sm : St) : Inv (System.init config sm : Syst
     simp [System.init] at h
   belowView := fun _ _ h => (Sent.init h).elim
   recoveryCovers := fun _ _ _ _ _ _ _ _ h => (Sent.init h).elim
+  covered := by
+    unfold Covered
+    intro r hr i hi
+    simp only [System.init, List.mem_map] at hr
+    obtain ⟨_, _, rfl⟩ := hr
+    simp at hi
+  agree := by
+    unfold ReplicasAgree
+    intro r hr q hq _ i e e' he _
+    simp only [System.init, List.mem_map] at hr
+    obtain ⟨_, _, rfl⟩ := hr
+    simp at he
+  startedViews := by
+    refine ⟨fun _ _ h => by simp [System.init] at h, fun _ _ _ hf => (Frag.init hf).elim, ?_⟩
+    intro r hr _ hv
+    simp only [System.init, List.mem_map] at hr
+    obtain ⟨_, _, rfl⟩ := hr
+    simp at hv
+  clean := by
+    unfold Clean
+    intro r hr
+    simp only [System.init, List.mem_map] at hr
+    obtain ⟨_, _, rfl⟩ := hr
+    exact ⟨rfl, rfl⟩
+  two := htwo
 
 /-! ### What the invariant gives -/
 
