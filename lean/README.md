@@ -15,6 +15,7 @@ traces on the real replicas and on this model and diffs what they do.
 | `Vsr/Frame.lean` | Frame lemmas: what each helper leaves alone, as `@[simp]` lemmas, so a goal about a handler stays a goal about a few fields. |
 | `Vsr/Local.lean` | The per-replica invariant `LocalInv` and the proof that every handler preserves it. |
 | `Vsr/WellFormed.lean` | The well-formedness predicate `WF` on messages and the proof that every handler only sends well-formed messages. |
+| `Vsr/Invariant.lean` | Layers three to five stated as one invariant, `Inv`, with the ghost history of started views, monotonicity of everything stated through `sent`, the initial state, and the proof that `Inv` implies prefix agreement. Preservation is the open work. |
 | `Vsr/Liveness.lean` | A synchronous scheduler, the liveness property `settles`, and the storm counterexample: theorems, proved by running the model in the kernel, that a reachable state never settles. |
 | `Vsr/Check.lean` | Executable (`Bool`) versions of every invariant, proved or candidate, and of bounded liveness, which `vsr-replay` evaluates after every step. |
 | `Vsr/Safety.lean` | `Reachable`, the four safety properties, the lifts of the replica-level invariants to the system, and the main theorem. |
@@ -28,7 +29,7 @@ traces on the real replicas and on this model and diffs what they do.
 | Local invariant | The per-replica facts below hold initially and after every handler, idle period, and recovery. | `Vsr.Replica.LocalInv.onMessage`, `.onIdle`, `.recover`, `.new`; lifted by `Vsr.AllLocal.step` | **Proved.** |
 | Well-formed messages | Every message ever sent is well formed: `NewState`, `DoViewChange`, and `StartView` log lengths match the op numbers they carry, commit numbers do not exceed them, a `DoViewChange` vote's last normal view is not ahead of its view, and a recovery state's commit number is within its log. | `Vsr.sentWF_of_reachable`, from `Vsr.Replica.OutboxWF.onMessage`, `.onIdle`, `.recover` | **Proved.** Axioms: `propext`, `Quot.sound`. |
 | No panic | No Rust `assert!` fires in any reachable state. | `Vsr.safety` | `sorry`. Needs layer 5. |
-| Prefix agreement | Two replicas that both committed index `i` hold the same entry there. | `Vsr.safety` | `sorry`. Needs layers 3 to 5. |
+| Prefix agreement | Two replicas that both committed index `i` hold the same entry there. | `Vsr.safety` | `sorry`. **Follows from `Inv`**: `Vsr.Inv.prefixAgreement` is proved. What is missing is that every step preserves `Inv`. |
 | Durability | Every committed entry is held at its index by enough non-recovering replicas to meet every quorum they could form. | `Vsr.safety` | `sorry`. Needs layers 4 and 5. |
 | Liveness | On a synchronous network, from any reachable state with a quorum not recovering, the cluster settles: all normal, same view, nothing in flight. | `Vsr.settles` | `sorry`. Proved for the regression scenario by `Vsr.Storm.storm_settles`; tested by `Check.liveness` on every trace state. Refuted the view-change storm before its fix; see below. |
 
@@ -60,6 +61,28 @@ EOF2
 
 The first two print `[propext, Quot.sound]`. The third includes `sorryAx`,
 which is how Lean marks a theorem that rests on an unwritten proof.
+
+### The combined invariant
+
+`Vsr/Invariant.lean` states layers three to five as one structure, `Inv`,
+because they are one induction. Working the hardest case through on
+paper, a `PrepareOk` that completes a quorum, showed that the three
+layers alone are not inductive: the argument needs to know that a
+replica's acknowledgement was sent before its vote for a later view, that
+the primary's log covers everything it has sent in its view, and which
+votes a view's log was chosen from. None of that is in the state, so
+`Inv` carries nine helper clauses, each with a `Bool` twin in `Vsr/Check.lean`
+that holds on every trace: `Ids`, `AcksCurrent`, `CatchingUpNotPrimary`,
+`AcksHold`, `PrimaryToOthers`, `PrimaryLongest`, `StartViewChosen`,
+`StartedVotesCover`, `MessagesBelowView`, `RecoveryCoversAcks`.
+
+One of them needed a history variable. The primary's own vote never
+appears in `sent`, so when its own log is the one a view starts from,
+nothing persistent records what was chosen. The model now has a ghost
+field, `System.started`, the votes every started view was chosen from,
+filled by the system step from a ghost field on the replica. It is not in
+the Rust and not observable, so the conformance test is unaffected; it
+exists so that a proof can point at it.
 
 ## Liveness
 
@@ -114,9 +137,9 @@ system, proved in layers:
 |---|---|---|
 | 1 | Local facts per replica, above. | Done. |
 | 2 | Every message in `sent` is well formed: log lengths match the op numbers carried, commit numbers do not exceed them, `NewState` lengths match its range. | Done: `Vsr/WellFormed.lean`. |
-| 3 | One log per view: every `Prepare`, `StartView`, and `NewState` of view `v`, and the log of every replica whose last normal view is `v`, are prefixes of one another. | Stated as a check (`one_log_per_view`); holds on every trace tried. Next to prove. |
-| 4 | Committed means acknowledged: a committed index has a quorum of `PrepareOk` messages in `sent` behind it, in some view whose log holds that entry. `sent` is never pruned, so it is the history. | Stated as a check (`committed_acked`); holds on every trace tried. |
-| 5 | Committed entries cross view changes and recovery: any log whose last normal view is above `v` holds everything a quorum acknowledged in `v`. Quorum intersection; this is where Mathlib comes in. | Stated as a check (`committed_survives`); holds on every trace tried. |
+| 3 | One log per view: every `Prepare`, `StartView`, and `NewState` of view `v`, and the log of every replica whose last normal view is `v`, are prefixes of one another. | Stated as `OneLogPerView` in `Vsr/Invariant.lean`; check `one_log_per_view` holds on every trace. |
+| 4 | Committed means acknowledged: a committed index has a quorum of `PrepareOk` messages in `sent` behind it, in some view whose log holds that entry. `sent` is never pruned, so it is the history. | Stated as `CommitsBacked`, for replicas and for every commit number a message carries; checks hold. |
+| 5 | Committed entries cross view changes and recovery: any log whose last normal view is above `v` holds everything a quorum acknowledged in `v`. Quorum intersection; this is where Mathlib comes in. | Stated as `Survives`; check holds. `Inv.init` and `Inv.prefixAgreement` are proved. **Preservation of `Inv` by every step is the open work**, starting with the normal-case handlers. |
 | 6 | Liveness on the synchronous scheduler, `settles`. Needs layer 5 and a ranking argument on the backoff. | Stated, tested on every trace state, proved for one scenario. Proof waits for layer 5. |
 
 The `assert!` in `install_log`, that an incoming log is at least as long

@@ -140,6 +140,9 @@ theorem LocalInv.withReplies (x : List (Reply Output)) :
 theorem LocalInv.withVotes (x : List (ReplicaId × Vote Op)) :
     LocalInv ({ r with doViewChangeVotes := x } : Replica Op Output St) := by
   simpa [LocalInv] using h
+theorem LocalInv.withChosen (x : Option (List (ReplicaId × Vote Op))) :
+    LocalInv ({ r with chosenVotes := x } : Replica Op Output St) := by
+  simpa [LocalInv] using h
 theorem LocalInv.withDoViewChangeSent (b : Bool) :
     LocalInv ({ r with doViewChangeSent := b } : Replica Op Output St) := by
   simpa [LocalInv] using h
@@ -253,7 +256,8 @@ theorem LocalInv.recordDoViewChange (replicaId : ReplicaId) (vote : Vote Op)
   · split
     · exact h'.panic
     · apply sendToOthers_fold
-      exact ((h'.installLog _ hn).commitUpTo m _ _).enterNormal.withAcks [] |>.addAcksForUncommitted
+      exact (((h'.withChosen _).installLog _ hn).commitUpTo m _ _).enterNormal.withAcks []
+        |>.addAcksForUncommitted
 where
   /-- A fold of `sendStartView` keeps the invariant. -/
   sendToOthers_fold {r : Replica Op Output St} (l : List ReplicaId) (h : LocalInv r) :

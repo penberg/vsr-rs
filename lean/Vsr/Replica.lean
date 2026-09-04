@@ -53,6 +53,10 @@ structure Replica (Op Output St : Type) where
   replies : List (Reply Output)
   /-- Set where the Rust would have panicked. -/
   panicked : Bool
+  /-- Ghost, for the proofs: the votes this replica just started a view
+  from, taken by the system step into its history like the outbox. Not in
+  the Rust, and not observable. -/
+  chosenVotes : Option (List (ReplicaId × Vote Op))
 deriving DecidableEq
 
 namespace Replica
@@ -83,6 +87,7 @@ def new (selfId : ReplicaId) (config : Config) (sm : St) : Replica Op Output St 
   outbox := []
   replies := []
   panicked := false
+  chosenVotes := none
 
 def opNumber (r : Replica Op Output St) : OpNumber := r.log.length
 
@@ -223,6 +228,7 @@ def recordDoViewChange (m : Machine Op Output St) (r : Replica Op Output St) (re
     | none => r.panic
     | some best =>
       let commitNumber := r.doViewChangeVotes.foldl (fun acc (_, v) => max acc v.commitNumber) 0
+      let r := { r with chosenVotes := some r.doViewChangeVotes }
       let r := r.installLog best.log
       let r := commitUpTo m r commitNumber true
       let r := { r.enterNormal with acks := [] }.addAcksForUncommitted

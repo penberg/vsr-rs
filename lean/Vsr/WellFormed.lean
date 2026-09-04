@@ -11,6 +11,7 @@ namespace Vsr
 
 /-- Well-formed messages: the shape facts a receiver relies on. -/
 def WF {Op : Type} : Message Op → Prop
+  | .prepare _ o _ _ _ _ => 0 < o
   | .newState _ log a b k => log.length = b - a ∧ a ≤ b ∧ k ≤ b
   | .doViewChange v _ l log o k => log.length = o ∧ k ≤ o ∧ l ≤ v
   | .startView _ log o k => log.length = o ∧ k ≤ o
@@ -102,6 +103,9 @@ theorem OutboxWF.withReplies (x : List (Reply Output)) :
 theorem OutboxWF.withVotes (x : List (ReplicaId × Vote Op)) :
     OutboxWF ({ r with doViewChangeVotes := x } : Replica Op Output St) := by
   simpa [OutboxWF] using ho
+theorem OutboxWF.withChosen (x : Option (List (ReplicaId × Vote Op))) :
+    OutboxWF ({ r with chosenVotes := x } : Replica Op Output St) := by
+  simpa [OutboxWF] using ho
 theorem OutboxWF.withDoViewChangeSent (b : Bool) :
     OutboxWF ({ r with doViewChangeSent := b } : Replica Op Output St) := by
   simpa [OutboxWF] using ho
@@ -138,7 +142,9 @@ theorem OutboxWF.resendPrepares (v : ViewNumber) (c : CommitNumber) :
     dsimp only
     split
     · exact ho.panic
-    · exact ho.sendToOthers trivial
+    · exact ho.sendToOthers (by
+        show 0 < c + 1 + i
+        exact Nat.lt_of_lt_of_le (Nat.succ_pos c) (Nat.le_add_right _ _))
 
 theorem OutboxWF.acceptFromPrimary (v : ViewNumber) : OutboxWF (r.acceptFromPrimary v).1 := by
   unfold Replica.acceptFromPrimary
@@ -178,8 +184,10 @@ theorem OutboxWF.recordDoViewChange (replicaId : ReplicaId) (vote : Vote Op)
   · split
     · exact ho'.panic
     · apply OutboxWF.foldl_sendStartView
-      · exact ((hl'.installLog _ hn).commitUpTo m _ _).enterNormal.withAcks [] |>.addAcksForUncommitted
-      · exact ((ho'.installLog _).commitUpTo m _ _).enterNormal.withAcks [] |>.addAcksForUncommitted
+      · exact (((hl'.withChosen _).installLog _ hn).commitUpTo m _ _).enterNormal.withAcks []
+          |>.addAcksForUncommitted
+      · exact (((ho'.withChosen _).installLog _).commitUpTo m _ _).enterNormal.withAcks []
+          |>.addAcksForUncommitted
 
 theorem OutboxWF.sendDoViewChange (hn : r.status ≠ .recovering) :
     OutboxWF (Replica.sendDoViewChange m r) := by
@@ -231,7 +239,7 @@ theorem OutboxWF.prepareRequest (clientId : ClientId) (requestNumber : RequestNu
     OutboxWF (r.prepareRequest clientId requestNumber op) := by
   unfold Replica.prepareRequest
   try simp only
-  exact ((ho.appendToLog _).withAcks _).sendToOthers trivial
+  exact ((ho.appendToLog _).withAcks _).sendToOthers (by simp [WF, Replica.opNumber])
 
 omit hl in
 theorem OutboxWF.onRequest (clientId : ClientId) (requestNumber : RequestNumber) (op : Op) :
