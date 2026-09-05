@@ -1,0 +1,11 @@
+✖ [1461/1461] Building Vsr.RunCheck (578s)
+trace: .> LEAN_PATH=/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/Cli/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/batteries/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/aesop/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/importGraph/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/plausible/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/auto/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/cvc5/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/Qq/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/mathlib/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/smt/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/Loom/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/packages/veil/.lake/build/lib/lean:/home/penberg/src/penberg/vsr-rs/veil/.lake/build/lib/lean /home/penberg/.elan/toolchains/leanprover--lean4---v4.32.0/bin/lean /home/penberg/src/penberg/vsr-rs/veil/Vsr/RunCheck.lean -o /home/penberg/src/penberg/vsr-rs/veil/.lake/build/lib/lean/Vsr/RunCheck.olean -i /home/penberg/src/penberg/vsr-rs/veil/.lake/build/lib/lean/Vsr/RunCheck.ilean -c /home/penberg/src/penberg/vsr-rs/veil/.lake/build/ir/Vsr/RunCheck.c --setup /home/penberg/src/penberg/vsr-rs/veil/.lake/build/ir/Vsr/RunCheck.setup.json --json
+error: Lean exited with code 143
+Some required targets logged failures:
+- Vsr.RunCheck
+error: build failed
+
+real	9m41.253s
+user	151m32.862s
+sys	5m38.833s
+EXIT 1

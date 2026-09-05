@@ -1,0 +1,11 @@
+name = "vsr-veil"
+version = "0.1.0"
+defaultTargets = ["Vsr"]
+
+[[require]]
+name = "veil"
+git = "https://github.com/verse-lab/veil.git"
+rev = "main"
+
+[[lean_lib]]
+name = "Vsr"

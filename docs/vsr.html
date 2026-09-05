@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Viewstamped Replication Made Live</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 700px;
+            margin: 0 auto;
+            padding: 2rem 1rem;
+            color: #333;
+        }
+        h1 {
+            line-height: 1.2;
+            margin-bottom: 0.5rem;
+        }
+        .byline {
+            color: #666;
+            font-size: 0.9rem;
+            margin-bottom: 2rem;
+        }
+        p {
+            margin-bottom: 1rem;
+        }
+        code {
+            background: #f4f4f4;
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        }
+        pre {
+            background: #f4f4f4;
+            padding: 1rem;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+        pre code {
+            background: none;
+            padding: 0;
+        }
+        ul, ol {
+            margin: 1rem 0;
+        }
+        li {
+            margin-bottom: 0.5rem;
+        }
+        a {
+            color: #0066cc;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        .theorem {
+            border-left: 3px solid #ccc;
+            padding: 0.5rem 1rem;
+            margin: 1.5rem 0;
+            background: #fafafa;
+        }
+        .theorem p {
+            margin-bottom: 0.5rem;
+        }
+        .theorem p:last-child {
+            margin-bottom: 0;
+        }
+        .theorem .name {
+            font-weight: bold;
+        }
+        var {
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <article>
+        <h1>Viewstamped Replication Made Live</h1>
+        <div class="byline">By Pekka Enberg &mdash; Sep 5th, 2026</div>
+
+        <p>Viewstamped Replication is the oldest of the three protocols that keep a replicated state machine consistent by electing a primary. Oki and Liskov published it in 1988, a year before Paxos was written up, and Liskov and Cowling revised it in 2012 into the form most people read today: <a href="https://dspace.mit.edu/entities/publication/80846d94-fcd3-40e6-87fb-8d91fe99a5d1">Viewstamped Replication Revisited</a>. The revision has one distinctive feature. It is specified to run with no disk at all. A replica that crashes and forgets everything asks the others what it missed.</p>
+
+        <p>I have spent the past while implementing the protocol, testing it in a deterministic simulator, and building a machine-checked proof of its safety. This post summarizes the paper that came out of that, <em>Viewstamped Replication Made Live</em>, whose title borrows from Google's <em>Paxos Made Live</em> for a reason that will become clear.</p>
+
+        <h2>The paper is not the protocol</h2>
+
+        <p>The 2012 paper argues its own correctness informally, and read literally, it is not safe. There are three places where an implementation that follows the text loses committed data or executes an operation twice:</p>
+
+        <ul>
+            <li><strong>Recovery forgets the view.</strong> The paper replaces the disk write of the 1988 protocol with a round of <code>StartViewChange</code> messages, on the argument that a replica cannot forget it took part in a view change if a majority saw it start one. But a replica can crash after sending <code>StartViewChange</code> and before anyone receives it, recover into the old view, and then receive the responses to a message it has no memory of sending. It completes a view change it never intended, while the old primary keeps committing. The fix is the one write the 1988 protocol made and the 2012 paper gave up: persist the view number.</li>
+            <li><strong>State transfer truncates.</strong> A replica that learns of a later view is told to cut its log back to its commit number before asking for the new view's log. If it had acknowledged an entry past that point, the entry may have been committed on the strength of that acknowledgement, and the replica's later vote no longer carries it. The fix is to never truncate: keep the log, ask for the suffix after the commit number, and replace only that.</li>
+            <li><strong>The commit number can go backwards.</strong> A <code>StartView</code> may legitimately carry a commit number lower than the receiver's. If the receiver adopts it, the next <code>Prepare</code> re-executes operations it already applied. The fix is that the commit number only moves forward, from any message.</li>
+        </ul>
+
+        <p>None of this is new. The recovery defect was found by Michael, Ports, Sharma, and Szekeres; the truncation and commit-number defects by Jack Vanlightly's TLA+ analysis. What is new is that an implementation has to adopt all three fixes at once, and then runs a protocol that no single paper states. That was also the situation Chandra, Griesemer, and Redstone described in <em>Paxos Made Live</em>: the algorithm with a proof is not the one you can run, and the one you can run has no proof. This paper is an attempt to close that gap for Viewstamped Replication. It states the corrected protocol as pseudocode and proves it safe.</p>
+
+        <h2>What is proved</h2>
+
+        <p>The setting is a cluster of <var>N</var> &ge; 2 replicas on a network that can lose, delay, duplicate, and reorder messages, where replicas crash and come back with nothing but their persisted view number. Each replica <var>r</var> has a log <var>L<sub>r</sub></var> and a commit number <var>k<sub>r</sub></var>, the length of the prefix it has committed. A quorum is <var>Q</var> = &lfloor;<var>N</var>/2&rfloor; + 1. Write <var>R</var> for the set of replicas that are not currently recovering. The two main results are these.</p>
+
+        <div class="theorem">
+            <p><span class="name">Theorem 1.1 (Log safety).</span> In every reachable cluster state:</p>
+            <ol>
+                <li><em>Prefix agreement.</em> If <var>i</var> &lt; <var>k<sub>a</sub></var> and <var>i</var> &lt; <var>k<sub>b</sub></var> then <var>L<sub>a</sub></var>[<var>i</var>] = <var>L<sub>b</sub></var>[<var>i</var>].</li>
+                <li><em>Durability.</em> For every <var>r</var> in <var>R</var> and <var>i</var> &lt; <var>k<sub>r</sub></var>, at least |<var>R</var>| + 1 &minus; <var>Q</var> replicas in <var>R</var> hold <var>L<sub>r</sub></var>[<var>i</var>] at index <var>i</var>.</li>
+                <li><em>Commit bounded.</em> <var>k<sub>r</sub></var> &le; |<var>L<sub>r</sub></var>|.</li>
+            </ol>
+        </div>
+
+        <div class="theorem">
+            <p><span class="name">Theorem 1.2 (Linearizability).</span> Every history of client requests and replies of a reachable cluster is linearizable with respect to the sequential state machine.</p>
+        </div>
+
+        <p>Prefix agreement says two replicas that have both committed an index hold the same entry there. Durability says every quorum the non-recovering replicas could form contains a replica holding each committed entry, so no view change can lose one; with nobody recovering, that is a majority. A recovering replica holds nothing and votes for nothing, so it counts on neither side. Linearizability is what a client sees: replies are consistent with a single sequential execution that respects the order in which requests were issued.</p>
+
+        <h2>How it is proved</h2>
+
+        <p>Neither theorem survives a single protocol step on its own. When a <code>PrepareOk</code> completes a quorum and the primary commits, whether the entry is now on a majority depends on what the other acknowledgements said, and nothing in the theorem statement records that. So the statement has to be strengthened until it closes on itself: an <em>inductive invariant</em>, a property that holds at startup and that no single step can make false. Once you have one, it holds forever, and the theorems are read off from it.</p>
+
+        <p>The invariant is stated over the <em>history</em>: the set of every message ever sent, from which delivery never removes anything. Replicas forget. A view change replaces a backup's log. But the <code>PrepareOk</code> that backup sent in the old view stays in the history, and the invariant quantifies over that. The history also makes the network model one rule: delivery picks any message ever sent, which covers loss, delay, duplication, and reordering at once.</p>
+
+        <p>The invariant has five named parts:</p>
+
+        <ul>
+            <li><strong>Local.</strong> Each replica's own fields are consistent: the commit number is within the log, the last normal view is not ahead of the current view.</li>
+            <li><strong>Well-formed.</strong> Each message's fields agree with each other: a <code>StartView</code>'s log is as long as it claims.</li>
+            <li><strong>View-agreement.</strong> Within a view, an index determines its entry. Every piece of view <var>v</var>'s log anywhere in the history, and every replica whose log came from <var>v</var>, agrees wherever they overlap. This is the property Raft calls log matching, with views for terms. It holds because a view has one primary and the primary is the only replica that appends in it.</li>
+            <li><strong>Commits-backed.</strong> Every commit number, on a replica or in a message, is justified: each index below it was acknowledged by a quorum in some view.</li>
+            <li><strong>Survival.</strong> Whatever was committed in a view is held, at the same index, by every later view's log.</li>
+        </ul>
+
+        <p>Survival is where the paper's informal argument lives, made precise. The lemma that carries it says: if view <var>v</var> was started from a quorum of votes, and some entry was committed at index <var>i</var> in an earlier view <var>u</var>, then the vote from which <var>v</var>'s log was chosen holds that entry at <var>i</var>. The proof is a strong induction on <var>v</var>. The quorum that acknowledged the entry and the quorum that voted intersect in some replica, and that replica either still holds the entry from view <var>u</var>, or adopted it from the log of a view between <var>u</var> and <var>v</var>, to which the hypothesis applies.</p>
+
+        <p>Each of the three corrections is what makes one step of that argument go through. Without the persisted view number, a replica's view can go backwards, and the induction has no order to run on. Without the ban on truncation, a vote need not cover what its sender acknowledged, and the intersecting replica may have lost the entry. Without monotone commits, Commits-backed fails at the replica that adopted a lower number. The paper makes this explicit: every correction is named against the clause of the invariant it keeps true.</p>
+
+        <h2>Structure of the paper</h2>
+
+        <p>The paper follows the shape of an algorithms paper rather than a systems paper. The main theorems are stated in the introduction. The preliminaries define the cluster, the history, and the invariant. A framework section then states the interface of every handler as a lemma, in the form <em>precondition, effect, guarantee</em>, and proves the theorems from those interfaces before showing a line of pseudocode. The protocol itself follows, one section per sub-protocol, each with the pseudocode, an overview, and the analysis that discharges its interface lemmas. The published protocol and its corrections are an appendix, for readers who want to see where the 2012 text leads wrong.</p>
+
+        <p>The proofs in the paper are sketches. The full proofs are being machine-checked in Lean 4 against a model that is one definition per function of the implementation, with the same control flow, and the model's correspondence to the code is tested by replaying the same traces on both. That part is still in progress, and the paper says so.</p>
+
+        <p>The paper draft, the implementation, the simulator, and the Lean model are at <a href="https://github.com/penberg/vsr-rs">github.com/penberg/vsr-rs</a>.</p>
+
+    </article>
+</body>
+</html>
