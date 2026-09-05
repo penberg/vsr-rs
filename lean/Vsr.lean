@@ -1,4 +1,5 @@
 import Vsr.Types
+import Vsr.Quorum
 import Vsr.Replica
 import Vsr.System
 import Vsr.Frame

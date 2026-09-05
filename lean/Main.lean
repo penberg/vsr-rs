@@ -1,4 +1,3 @@
-import Vsr
 import Vsr.Check
 
 /-!
