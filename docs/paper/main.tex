@@ -71,8 +71,8 @@
 \newcommand{\viewchange}{\textsc{view-change}}
 \newcommand{\transfer}{\textsc{transfer}}
 \newcommand{\recovering}{\textsc{recovering}}
-\newcommand{\Local}{\textsc{Local}}
-\newcommand{\WellFormed}{\textsc{Well-formed}}
+\newcommand{\Local}{\textsc{Local-consistency}}
+\newcommand{\WellFormed}{\textsc{Message-consistency}}
 \newcommand{\OneLog}{\textsc{View-agreement}}
 \newcommand{\CommitsBacked}{\textsc{Commits-backed}}
 \newcommand{\Survival}{\textsc{Survival}}
@@ -181,7 +181,7 @@ at once.
 
 $\Inv$ has five parts, named for what they say. \Local: each replica's
 own fields are consistent. \WellFormed: each message's fields agree with
-each other. \OneLog: within a view, an index determines its entry, so every
+one another. \OneLog: within a view, an index determines its entry, so every
 fragment of a view's log that the history holds agrees with every other. \CommitsBacked: every commit number is
 justified by a quorum of acknowledgements. \Survival: whatever was
 committed in a view is held, at the same index, by every later view. The lemma
@@ -413,7 +413,7 @@ $L_r = \varepsilon$ and $k_r = 0$.
 
 \begin{definition}[\WellFormed]
 \label{def:wellformed}
-Every message in $\sent$ is well formed: a \msg{StartView} or
+Every message in $\sent$ has fields that agree with one another: a \msg{StartView} or
 \msg{DoViewChange} log is as long as its op number and its commit number
 does not exceed it; a \msg{NewState} log is as long as $b - a$ with
 $k \le b$; a \msg{DoViewChange} has $\ell \le v$; a \msg{Prepare} has
@@ -546,6 +546,24 @@ including $\Inv$. \textsc{Effect} is what it changes and sends.
 fact the step establishes. A handler whose guard fails has no effect and
 trivially preserves $\Inv$.
 
+\paragraph{What is assumed and what is proved.} The line is drawn
+where the protocol's control ends. Assumption~\ref{asm:model} is about
+the world the protocol runs in: the network, what a crash keeps, when
+timers fire. Nothing the protocol produces is assumed. A replica's
+fields are written by its handlers, and a message's fields by the
+replica that sends it, so any fact about them is the protocol's
+responsibility and must come out of the induction. That includes the two
+facts every handler relies on to run at all: that its own commit number
+is within its own log, and that the message it was handed has fields
+that agree with each other. These are the input requirements of the
+handlers, in the sense that a subroutine has preconditions its callers
+must meet. The callers here are the handler that ran before, for a
+replica's state, and the sender, for a message. We do not assume the
+callers comply. We prove it at every call site: \Local{} is proved once
+for every handler, and \WellFormed{} once for every send. Everything
+above them in the invariant is proved the same way, one handler at a
+time, from the interface lemmas below.
+
 \subsection{Interfaces of the handlers}
 
 One guarantee is shared by every handler and needs no assumption about
@@ -557,7 +575,7 @@ Every handler of Sections~\ref{sec:normal} to~\ref{sec:recovery}, given
 any message, leaves the replica satisfying \Local
 (Definition~\ref{def:local}): its commit number within its log, its
 last normal view not ahead of its view, and its status consistent with
-both. Every message it sends is well formed (Definition~\ref{def:wellformed}).
+both. Every message it sends satisfies \WellFormed{} (Definition~\ref{def:wellformed}).
 \end{lemma}
 \begin{proof}
 $k_r$ rises only in \Call{CommitUpTo}{}, which stops at $n_r$; a log is

@@ -126,8 +126,8 @@
         <p>The invariant has five named parts:</p>
 
         <ul>
-            <li><strong>Local.</strong> Each replica's own fields are consistent: the commit number is within the log, the last normal view is not ahead of the current view.</li>
-            <li><strong>Well-formed.</strong> Each message's fields agree with each other: a <code>StartView</code>'s log is as long as it claims.</li>
+            <li><strong>Local consistency.</strong> Each replica's own fields are consistent with one another: the commit number is within the log, the last normal view is not ahead of the current view.</li>
+            <li><strong>Message consistency.</strong> Each message's fields agree with one another: a <code>StartView</code>'s log is as long as it claims.</li>
             <li><strong>View-agreement.</strong> Within a view, an index determines its entry. Every piece of view <var>v</var>'s log anywhere in the history, and every replica whose log came from <var>v</var>, agrees wherever they overlap. This is the property Raft calls log matching, with views for terms. It holds because a view has one primary and the primary is the only replica that appends in it.</li>
             <li><strong>Commits-backed.</strong> Every commit number, on a replica or in a message, is justified: each index below it was acknowledged by a quorum in some view.</li>
             <li><strong>Survival.</strong> Whatever was committed in a view is held, at the same index, by every later view's log.</li>
