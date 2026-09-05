@@ -16,7 +16,7 @@ structure ClientEntry (Output : Type) where
   reply : Option Output
 deriving Repr, DecidableEq
 
-structure Vote (Op : Type) where
+structure DoViewChange (Op : Type) where
   lastNormalView : ViewNumber
   log : List (LogEntry Op)
   commitNumber : CommitNumber
@@ -45,7 +45,7 @@ structure Replica (Op Output St : Type) where
   idlePeriodsStable : Nat
   startViewChangeFrom : List ReplicaId
   doViewChangeSent : Bool
-  doViewChangeVotes : List (ReplicaId × Vote Op)
+  doViewChangeFrom : List (ReplicaId × DoViewChange Op)
   catchingUp : Bool
   recoveryNonce : Nat
   recoveryResponses : List (ReplicaId × RecoveryResponse Op)
@@ -53,10 +53,10 @@ structure Replica (Op Output St : Type) where
   replies : List (Reply Output)
   /-- Set where the Rust would have panicked. -/
   panicked : Bool
-  /-- Ghost, for the proofs: the votes this replica just started a view
+  /-- Ghost, for the proofs: the DoViewChange messages this replica just started a view
   from, taken by the system step into its history like the outbox. Not in
   the Rust, and not observable. -/
-  chosenVotes : Option (List (ReplicaId × Vote Op))
+  chosenDoViewChanges : Option (List (ReplicaId × DoViewChange Op))
 deriving DecidableEq
 
 namespace Replica
@@ -80,14 +80,14 @@ def new (selfId : ReplicaId) (config : Config) (sm : St) : Replica Op Output St 
   idlePeriodsStable := 0
   startViewChangeFrom := []
   doViewChangeSent := false
-  doViewChangeVotes := []
+  doViewChangeFrom := []
   catchingUp := false
   recoveryNonce := 0
   recoveryResponses := []
   outbox := []
   replies := []
   panicked := false
-  chosenVotes := none
+  chosenDoViewChanges := none
 
 def opNumber (r : Replica Op Output St) : OpNumber := r.log.length
 
@@ -179,7 +179,7 @@ def commitUpTo (m : Machine Op Output St) (r : Replica Op Output St) (commitNumb
 /-! ### View changes -/
 
 def clearViewChangeState (r : Replica Op Output St) : Replica Op Output St :=
-  { r with startViewChangeFrom := [], doViewChangeSent := false, doViewChangeVotes := [] }
+  { r with startViewChangeFrom := [], doViewChangeSent := false, doViewChangeFrom := [] }
 
 def enterNormal (r : Replica Op Output St) : Replica Op Output St :=
   { r.clearViewChangeState with
@@ -203,43 +203,43 @@ def catchUpWithView (r : Replica Op Output St) (viewNumber : ViewNumber) : Repli
       idlePeriodsWaiting := 0 }.sendGetState r.commitNumber
 
 /-- The key `record_do_view_change` maximises: `(last_normal_view, log.len())`. -/
-def voteKey (v : Vote Op) : Nat × Nat := (v.lastNormalView, v.log.length)
+def doViewChangeKey (v : DoViewChange Op) : Nat × Nat := (v.lastNormalView, v.log.length)
 
 def keyGe (a b : Nat × Nat) : Bool := a.1 > b.1 || (a.1 = b.1 && a.2 ≥ b.2)
 
-/-- `Iterator::max_by_key` returns the last of equal maxima, and the votes
+/-- `Iterator::max_by_key` returns the last of equal maxima, and the DoViewChange messages
 are iterated by replica id. -/
-def bestVote (votes : List (ReplicaId × Vote Op)) : Option (Vote Op) :=
-  votes.foldl (fun best (_, v) =>
+def bestDoViewChange (dvcs : List (ReplicaId × DoViewChange Op)) : Option (DoViewChange Op) :=
+  dvcs.foldl (fun best (_, v) =>
     match best with
     | none => some v
-    | some b => if keyGe (voteKey v) (voteKey b) then some v else some b) none
+    | some b => if keyGe (doViewChangeKey v) (doViewChangeKey b) then some v else some b) none
 
 def addAcksForUncommitted (r : Replica Op Output St) : Replica Op Output St :=
   let acks := (List.range (r.opNumber - r.commitNumber)).map fun i => (r.commitNumber + 1 + i, [r.selfId])
   { r with acks := acks }
 
 def recordDoViewChange (m : Machine Op Output St) (r : Replica Op Output St) (replicaId : ReplicaId)
-    (vote : Vote Op) : Replica Op Output St :=
-  let r := { r with doViewChangeVotes := Assoc.insert r.doViewChangeVotes replicaId vote }
-  if r.doViewChangeVotes.length < r.config.quorum then r
+    (dvc : DoViewChange Op) : Replica Op Output St :=
+  let r := { r with doViewChangeFrom := Assoc.insert r.doViewChangeFrom replicaId dvc }
+  if r.doViewChangeFrom.length < r.config.quorum then r
   else
-    match bestVote r.doViewChangeVotes with
+    match bestDoViewChange r.doViewChangeFrom with
     | none => r.panic
     | some best =>
-      let commitNumber := r.doViewChangeVotes.foldl (fun acc (_, v) => max acc v.commitNumber) 0
-      let r := { r with chosenVotes := some r.doViewChangeVotes }
+      let commitNumber := r.doViewChangeFrom.foldl (fun acc (_, v) => max acc v.commitNumber) 0
+      let r := { r with chosenDoViewChanges := some r.doViewChangeFrom }
       let r := r.installLog best.log
       let r := commitUpTo m r commitNumber true
       let r := { r.enterNormal with acks := [] }.addAcksForUncommitted
       (r.config.replicas.filter (· ≠ r.selfId)).foldl (fun r to => r.sendStartView to) r
 
 def sendDoViewChange (m : Machine Op Output St) (r : Replica Op Output St) : Replica Op Output St :=
-  let vote : Vote Op := ⟨r.lastNormalView, r.log, r.commitNumber⟩
+  let dvc : DoViewChange Op := ⟨r.lastNormalView, r.log, r.commitNumber⟩
   let primaryId := r.config.primaryId r.viewNumber
-  if primaryId = r.selfId then recordDoViewChange m r r.selfId vote
+  if primaryId = r.selfId then recordDoViewChange m r r.selfId dvc
   else r.send primaryId
-    (.doViewChange r.viewNumber r.selfId vote.lastNormalView vote.log vote.log.length vote.commitNumber)
+    (.doViewChange r.viewNumber r.selfId dvc.lastNormalView dvc.log dvc.log.length dvc.commitNumber)
 
 def maybeSendDoViewChange (m : Machine Op Output St) (r : Replica Op Output St) : Replica Op Output St :=
   if r.status ≠ .viewChange ∨ r.catchingUp ∨ r.doViewChangeSent then r
@@ -401,12 +401,12 @@ def onStartViewChange (m : Machine Op Output St) (r : Replica Op Output St) (vie
   else noteStartViewChange m r replicaId
 
 def onDoViewChange (m : Machine Op Output St) (r : Replica Op Output St) (viewNumber : ViewNumber)
-    (replicaId : ReplicaId) (vote : Vote Op) : Replica Op Output St :=
+    (replicaId : ReplicaId) (dvc : DoViewChange Op) : Replica Op Output St :=
   if viewNumber < r.viewNumber ∨ r.config.primaryId viewNumber ≠ r.selfId then r
   else if viewNumber > r.viewNumber then
-    recordDoViewChange m (startViewChange m r viewNumber) replicaId vote
+    recordDoViewChange m (startViewChange m r viewNumber) replicaId dvc
   else if r.status = .normal then r.sendStartView replicaId
-  else recordDoViewChange m r replicaId vote
+  else recordDoViewChange m r replicaId dvc
 
 def onStartView (m : Machine Op Output St) (r : Replica Op Output St) (viewNumber : ViewNumber)
     (log : List (LogEntry Op)) (commitNumber : CommitNumber) : Replica Op Output St :=

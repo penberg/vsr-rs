@@ -26,16 +26,16 @@ def Sent (s : System Op Output St) (to : ReplicaId) (msg : Message Op) : Prop :=
 
 /-- A piece of view `v`'s log, starting at index `off`, held by a message.
 A `Prepare` is one entry at its op number; `NewState` a segment; `StartView`,
-a `DoViewChange` vote, and a primary's recovery state, whole logs, the vote
-belonging to the view the voter was last normal in. -/
+a `DoViewChange` dvc, and a primary's recovery state, whole logs, the dvc
+belonging to the view its sender was last normal in. -/
 inductive Frag (s : System Op Output St) : ViewNumber → Nat → List (LogEntry Op) → Prop
   | prepare {to v o c n op k} : Sent s to (.prepare v o c n op k) → Frag s v (o - 1) [⟨c, n, op⟩]
   | newState {to v log a b k} : Sent s to (.newState v log a b k) → Frag s v a log
   | startView {to v log o k} : Sent s to (.startView v log o k) → Frag s v 0 log
-  | vote {to v r l log o k} : Sent s to (.doViewChange v r l log o k) → Frag s l 0 log
+  | dvc {to v r l log o k} : Sent s to (.doViewChange v r l log o k) → Frag s l 0 log
   | recovery {to v n r st} : Sent s to (.recoveryResponse v n r (some st)) → Frag s v 0 st.log
-  | started {v votes q vote} : (v, votes) ∈ s.started → (q, vote) ∈ votes →
-      Frag s vote.lastNormalView 0 vote.log
+  | started {v dvcs q dvc} : (v, dvcs) ∈ s.started → (q, dvc) ∈ dvcs →
+      Frag s dvc.lastNormalView 0 dvc.log
 
 /-- Some fragment of view `v` holds `e` at index `i`. -/
 def Holds (s : System Op Output St) (v : ViewNumber) (i : Nat) (e : LogEntry Op) : Prop :=
@@ -66,7 +66,7 @@ committed in a view no later than `v`, with the entry view `v` holds. -/
 def Backed (s : System Op Output St) (v : ViewNumber) (k : Nat) : Prop :=
   ∀ i < k, ∃ e v', v' ≤ v ∧ Committed s v' i e ∧ Holds s v i e
 
-/-- The commit number a message carries is backed. A `DoViewChange` vote
+/-- The commit number a message carries is backed. A `DoViewChange`
 is judged by its last normal view. -/
 def MsgBacked (s : System Op Output St) : Message Op → Prop
   | .prepare v _ _ _ _ k => Backed s v k
@@ -94,8 +94,8 @@ def Survives (s : System Op Output St) : Prop :=
     (∀ to n r st, Sent s to (.recoveryResponse v n r (some st)) → st.log[i]? = some e) ∧
     (∀ to log a b k, Sent s to (.newState v log a b k) → a ≤ i → log[i - a]? = some e) ∧
     (∀ to c n op k, Sent s to (.prepare v (i + 1) c n op k) → (⟨c, n, op⟩ : LogEntry Op) = e) ∧
-    (∀ v'' votes q vote, (v'', votes) ∈ s.started → (q, vote) ∈ votes → vote.lastNormalView = v →
-      vote.log[i]? = some e) ∧
+    (∀ v'' dvcs q dvc, (v'', dvcs) ∈ s.started → (q, dvc) ∈ dvcs → dvc.lastNormalView = v →
+      dvc.log[i]? = some e) ∧
     (∀ r ∈ s.replicas, r.lastNormalView = v → r.status ≠ .recovering → r.log[i]? = some e)
 
 /-! ### The helpers the induction needs -/
@@ -155,32 +155,32 @@ def ReplicasAgree (s : System Op Output St) : Prop :=
 a fragment belongs to, or that a replica not recovering was last normal
 in, was started. -/
 def StartedViews (s : System Op Output St) : Prop :=
-  (∀ v votes, (v, votes) ∈ s.started → ∃ to log o k, Sent s to (.startView v log o k)) ∧
-  (∀ v off log, Frag s v off log → 0 < v → ∃ votes, (v, votes) ∈ s.started) ∧
+  (∀ v dvcs, (v, dvcs) ∈ s.started → ∃ to log o k, Sent s to (.startView v log o k)) ∧
+  (∀ v off log, Frag s v off log → 0 < v → ∃ dvcs, (v, dvcs) ∈ s.started) ∧
   (∀ r ∈ s.replicas, r.status ≠ .recovering → 0 < r.lastNormalView →
-    ∃ votes, (r.lastNormalView, votes) ∈ s.started)
+    ∃ dvcs, (r.lastNormalView, dvcs) ∈ s.started)
 
 /-- Between steps a replica has handed over its replies and the view it
 started, as it has its outbox (`Drained`). -/
 def Clean (s : System Op Output St) : Prop :=
-  ∀ r ∈ s.replicas, r.replies = [] ∧ r.chosenVotes = none
+  ∀ r ∈ s.replicas, r.replies = [] ∧ r.chosenDoViewChanges = none
 
 /-- A cluster of one replica never sends, so nothing about it can be said
 through `sent`; the invariant is for clusters of at least two. -/
 def TwoReplicas (s : System Op Output St) : Prop := 2 ≤ s.config.replicaCount
 
 /-- The log a `StartView` carries extends the log its view was started
-from: the best of a quorum of votes, by (last normal view, length). -/
+from: the best of a quorum of dvcs, by (last normal view, length). -/
 def StartViewChosen (s : System Op Output St) : Prop :=
   ∀ to v log o k, Sent s to (.startView v log o k) →
-    ∃ votes best, (v, votes) ∈ s.started ∧ s.config.quorum ≤ votes.length ∧
-      (votes.map Prod.fst).Nodup ∧ Replica.bestVote votes = some best ∧ best.log <+: log
+    ∃ dvcs best, (v, dvcs) ∈ s.started ∧ s.config.quorum ≤ dvcs.length ∧
+      (dvcs.map Prod.fst).Nodup ∧ Replica.bestDoViewChange dvcs = some best ∧ best.log <+: log
 
-/-- Every vote a view was started from covers every op its voter
-acknowledged in the view the vote is from. -/
-def StartedVotesCover (s : System Op Output St) : Prop :=
-  ∀ v votes, (v, votes) ∈ s.started → ∀ q vote, (q, vote) ∈ votes →
-    ∀ to o, Sent s to (.prepareOk vote.lastNormalView o q) → o ≤ vote.log.length
+/-- Every DoViewChange a view was started from covers every op its sender
+acknowledged in the view the dvc is from. -/
+def StartedDoViewChangesCover (s : System Op Output St) : Prop :=
+  ∀ v dvcs, (v, dvcs) ∈ s.started → ∀ q dvc, (q, dvc) ∈ dvcs →
+    ∀ to o, Sent s to (.prepareOk dvc.lastNormalView o q) → o ≤ dvc.log.length
 
 /-- The sender's view is written into the messages that name their
 sender, and a replica's view only grows, so none of them is ahead of the
@@ -220,7 +220,7 @@ structure Inv (s : System Op Output St) : Prop where
   toOthers : PrimaryToOthers s
   longest : PrimaryLongest s
   chosen : StartViewChosen s
-  votesCover : StartedVotesCover s
+  doViewChangesCover : StartedDoViewChangesCover s
   belowView : MessagesBelowView s
   recoveryCovers : RecoveryCoversAcks s
   covered : Covered s
@@ -245,7 +245,7 @@ theorem Frag.mono {v off log} (h : Frag s v off log) : Frag s' v off log := by
   | prepare h => exact .prepare (Sent.mono hsent h)
   | newState h => exact .newState (Sent.mono hsent h)
   | startView h => exact .startView (Sent.mono hsent h)
-  | vote h => exact .vote (Sent.mono hsent h)
+  | dvc h => exact .dvc (Sent.mono hsent h)
   | recovery h => exact .recovery (Sent.mono hsent h)
   | started h hv => exact .started (hstarted _ h) hv
 
@@ -290,7 +290,7 @@ theorem Frag.init {config : Config} {sm : St} {v off} {log : List (LogEntry Op)}
   | prepare h => exact Sent.init h
   | newState h => exact Sent.init h
   | startView h => exact Sent.init h
-  | vote h => exact Sent.init h
+  | dvc h => exact Sent.init h
   | recovery h => exact Sent.init h
   | started h _ => simp [System.init] at h
 
@@ -355,9 +355,9 @@ theorem Inv.init (config : Config) (sm : St) (htwo : 2 ≤ config.replicaCount) 
     obtain ⟨_, _, rfl⟩ := hq
     exact Nat.le_refl _
   chosen := fun _ _ _ _ _ h => (Sent.init h).elim
-  votesCover := by
-    unfold StartedVotesCover
-    intro v votes h
+  doViewChangesCover := by
+    unfold StartedDoViewChangesCover
+    intro v dvcs h
     simp [System.init] at h
   belowView := fun _ _ h => (Sent.init h).elim
   recoveryCovers := fun _ _ _ _ _ _ _ _ h => (Sent.init h).elim
@@ -413,7 +413,7 @@ same index, in every one of its fragments that covers it. -/
 theorem Inv.survives_holds {s : System Op Output St} (hinv : Inv s) {v' v i} {e e' : LogEntry Op}
     (hc : Committed s v' i e) (hlt : v' < v) (hh : Holds s v i e') : e' = e := by
   obtain ⟨off, log, hf, hoff, hget⟩ := hh
-  obtain ⟨hsv, hvote, hrec, hnew, hprep, hstarted, _⟩ := hinv.survives v' i e hc v hlt
+  obtain ⟨hsv, hdvc, hrec, hnew, hprep, hstarted, _⟩ := hinv.survives v' i e hc v hlt
   cases hf with
   | prepare h =>
     rename_i o c n op k
@@ -434,9 +434,9 @@ theorem Inv.survives_holds {s : System Op Output St} (hinv : Inv s) {v' v i} {e 
   | startView h =>
     simp only [Nat.sub_zero] at hget
     exact Option.some.inj (hget.symm.trans (hsv _ _ _ _ h))
-  | vote h =>
+  | dvc h =>
     simp only [Nat.sub_zero] at hget
-    exact Option.some.inj (hget.symm.trans (hvote _ _ _ _ _ _ h))
+    exact Option.some.inj (hget.symm.trans (hdvc _ _ _ _ _ _ h))
   | recovery h =>
     simp only [Nat.sub_zero] at hget
     exact Option.some.inj (hget.symm.trans (hrec _ _ _ _ h))

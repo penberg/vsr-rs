@@ -46,14 +46,14 @@ theorem acceptFromPrimary_true (r : Replica Op Output St) (v : ViewNumber)
 
 /-- Status after `startViewChange` and the helpers it calls: still in the
 view change, or normal if this replica was the new primary and had a
-quorum of votes already. Never recovering. -/
+quorum of dvcs already. Never recovering. -/
 theorem foldl_sendStartView_status (r : Replica Op Output St) (l : List ReplicaId) :
     (l.foldl (fun r to => r.sendStartView to) r).status = r.status :=
   foldl_proj Replica.status (fun r to => r.sendStartView to) (fun _ _ => rfl) l r
 
-theorem recordDoViewChange_status (r : Replica Op Output St) (id : ReplicaId) (vote : Vote Op) :
-    (Replica.recordDoViewChange m r id vote).status = r.status ∨
-    (Replica.recordDoViewChange m r id vote).status = .normal := by
+theorem recordDoViewChange_status (r : Replica Op Output St) (id : ReplicaId) (dvc : DoViewChange Op) :
+    (Replica.recordDoViewChange m r id dvc).status = r.status ∨
+    (Replica.recordDoViewChange m r id dvc).status = .normal := by
   unfold Replica.recordDoViewChange
   try simp only
   split
@@ -137,11 +137,11 @@ theorem LocalInv.withAcks (a : List (OpNumber × List ReplicaId)) :
 theorem LocalInv.withReplies (x : List (Reply Output)) :
     LocalInv ({ r with replies := x } : Replica Op Output St) := by
   simpa [LocalInv] using h
-theorem LocalInv.withVotes (x : List (ReplicaId × Vote Op)) :
-    LocalInv ({ r with doViewChangeVotes := x } : Replica Op Output St) := by
+theorem LocalInv.withDoViewChangeFrom (x : List (ReplicaId × DoViewChange Op)) :
+    LocalInv ({ r with doViewChangeFrom := x } : Replica Op Output St) := by
   simpa [LocalInv] using h
-theorem LocalInv.withChosen (x : Option (List (ReplicaId × Vote Op))) :
-    LocalInv ({ r with chosenVotes := x } : Replica Op Output St) := by
+theorem LocalInv.withChosen (x : Option (List (ReplicaId × DoViewChange Op))) :
+    LocalInv ({ r with chosenDoViewChanges := x } : Replica Op Output St) := by
   simpa [LocalInv] using h
 theorem LocalInv.withDoViewChangeSent (b : Bool) :
     LocalInv ({ r with doViewChangeSent := b } : Replica Op Output St) := by
@@ -246,11 +246,11 @@ section ViewChange
 variable {r : Replica Op Output St} (h : LocalInv r)
 include h
 
-theorem LocalInv.recordDoViewChange (replicaId : ReplicaId) (vote : Vote Op)
-    (hn : r.status ≠ .recovering) : LocalInv (Replica.recordDoViewChange m r replicaId vote) := by
+theorem LocalInv.recordDoViewChange (replicaId : ReplicaId) (dvc : DoViewChange Op)
+    (hn : r.status ≠ .recovering) : LocalInv (Replica.recordDoViewChange m r replicaId dvc) := by
   unfold Replica.recordDoViewChange
   try simp only
-  have h' := h.withVotes (Assoc.insert r.doViewChangeVotes replicaId vote)
+  have h' := h.withDoViewChangeFrom (Assoc.insert r.doViewChangeFrom replicaId dvc)
   split
   · exact h'
   · split
@@ -469,8 +469,8 @@ theorem LocalInv.onStartViewChange (v : ViewNumber) (replicaId : ReplicaId)
         · exact h
       · exact h.noteStartViewChange m _ hn
 
-theorem LocalInv.onDoViewChange (v : ViewNumber) (replicaId : ReplicaId) (vote : Vote Op)
-    (hn : r.status ≠ .recovering) : LocalInv (Replica.onDoViewChange m r v replicaId vote) := by
+theorem LocalInv.onDoViewChange (v : ViewNumber) (replicaId : ReplicaId) (dvc : DoViewChange Op)
+    (hn : r.status ≠ .recovering) : LocalInv (Replica.onDoViewChange m r v replicaId dvc) := by
   unfold Replica.onDoViewChange
   split
   · exact h

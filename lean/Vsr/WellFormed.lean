@@ -100,11 +100,11 @@ theorem OutboxWF.withAcks (a : List (OpNumber × List ReplicaId)) :
 theorem OutboxWF.withReplies (x : List (Reply Output)) :
     OutboxWF ({ r with replies := x } : Replica Op Output St) := by
   simpa [OutboxWF] using ho
-theorem OutboxWF.withVotes (x : List (ReplicaId × Vote Op)) :
-    OutboxWF ({ r with doViewChangeVotes := x } : Replica Op Output St) := by
+theorem OutboxWF.withDoViewChangeFrom (x : List (ReplicaId × DoViewChange Op)) :
+    OutboxWF ({ r with doViewChangeFrom := x } : Replica Op Output St) := by
   simpa [OutboxWF] using ho
-theorem OutboxWF.withChosen (x : Option (List (ReplicaId × Vote Op))) :
-    OutboxWF ({ r with chosenVotes := x } : Replica Op Output St) := by
+theorem OutboxWF.withChosen (x : Option (List (ReplicaId × DoViewChange Op))) :
+    OutboxWF ({ r with chosenDoViewChanges := x } : Replica Op Output St) := by
   simpa [OutboxWF] using ho
 theorem OutboxWF.withDoViewChangeSent (b : Bool) :
     OutboxWF ({ r with doViewChangeSent := b } : Replica Op Output St) := by
@@ -173,12 +173,12 @@ theorem OutboxWF.foldl_sendStartView (l : List ReplicaId) :
   | nil => exact ho
   | cons to l ih => exact ih (hl.sendStartView to) (ho.sendStartView hl to)
 
-theorem OutboxWF.recordDoViewChange (replicaId : ReplicaId) (vote : Vote Op)
-    (hn : r.status ≠ .recovering) : OutboxWF (Replica.recordDoViewChange m r replicaId vote) := by
+theorem OutboxWF.recordDoViewChange (replicaId : ReplicaId) (dvc : DoViewChange Op)
+    (hn : r.status ≠ .recovering) : OutboxWF (Replica.recordDoViewChange m r replicaId dvc) := by
   unfold Replica.recordDoViewChange
   try simp only
-  have hl' := hl.withVotes (Assoc.insert r.doViewChangeVotes replicaId vote)
-  have ho' := ho.withVotes (Assoc.insert r.doViewChangeVotes replicaId vote)
+  have hl' := hl.withDoViewChangeFrom (Assoc.insert r.doViewChangeFrom replicaId dvc)
+  have ho' := ho.withDoViewChangeFrom (Assoc.insert r.doViewChangeFrom replicaId dvc)
   split
   · exact ho'
   · split
@@ -358,8 +358,8 @@ theorem OutboxWF.onStartViewChange (v : ViewNumber) (replicaId : ReplicaId)
         · exact ho
       · exact OutboxWF.noteStartViewChange m hl ho _ hn
 
-theorem OutboxWF.onDoViewChange (v : ViewNumber) (replicaId : ReplicaId) (vote : Vote Op)
-    (hn : r.status ≠ .recovering) : OutboxWF (Replica.onDoViewChange m r v replicaId vote) := by
+theorem OutboxWF.onDoViewChange (v : ViewNumber) (replicaId : ReplicaId) (dvc : DoViewChange Op)
+    (hn : r.status ≠ .recovering) : OutboxWF (Replica.onDoViewChange m r v replicaId dvc) := by
   unfold Replica.onDoViewChange
   split
   · exact ho

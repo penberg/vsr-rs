@@ -14,9 +14,9 @@ structure System (Op Output St : Type) where
   replicas : List (Replica Op Output St)
   sent : List (ReplicaId × Message Op)
   replies : List (Reply Output)
-  /-- Ghost, for the proofs: every view a primary started, with the votes
+  /-- Ghost, for the proofs: every view a primary started, with the DoViewChange messages
   it chose the view's log from. Like `sent`, it only grows. -/
-  started : List (ViewNumber × List (ReplicaId × Vote Op))
+  started : List (ViewNumber × List (ReplicaId × DoViewChange Op))
 
 /-- One step of the cluster, chosen by the environment. -/
 inductive Step (Op : Type)
@@ -47,11 +47,11 @@ the view it started, if it started one. -/
 def drain (s : System Op Output St) (id : ReplicaId) (r : Replica Op Output St) :
     System Op Output St :=
   { s with
-    replicas := s.replicas.set id { r with outbox := [], replies := [], chosenVotes := none }
+    replicas := s.replicas.set id { r with outbox := [], replies := [], chosenDoViewChanges := none }
     sent := s.sent ++ r.outbox
     replies := s.replies ++ r.replies
-    started := s.started ++ (match r.chosenVotes with
-      | some votes => [(r.viewNumber, votes)]
+    started := s.started ++ (match r.chosenDoViewChanges with
+      | some dvcs => [(r.viewNumber, dvcs)]
       | none => []) }
 
 def withReplica (s : System Op Output St) (id : ReplicaId)

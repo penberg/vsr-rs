@@ -288,8 +288,8 @@ theorem commitUpTo_go_replies_false (m : Machine Op Output St) :
     (commitUpTo m r k false).replies = r.replies := by
   unfold commitUpTo; exact commitUpTo_go_replies_false m _ r
 
-@[simp] theorem commitUpTo_chosenVotes : (commitUpTo m r n reply).chosenVotes = r.chosenVotes :=
-  commitUpTo_go_proj m reply Replica.chosenVotes (fun _ => rfl) (fun _ _ => rfl) (fun _ _ => rfl) _ _
+@[simp] theorem commitUpTo_chosenDoViewChanges : (commitUpTo m r n reply).chosenDoViewChanges = r.chosenDoViewChanges :=
+  commitUpTo_go_proj m reply Replica.chosenDoViewChanges (fun _ => rfl) (fun _ _ => rfl) (fun _ _ => rfl) _ _
 
 /-- A commit round only commits an entry that exists, so the commit number
 stays within the log. -/

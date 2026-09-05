@@ -49,16 +49,16 @@ def prefixAgreement (s : System Op Output St) : Bool :=
     (List.range (min a.commitNumber b.commitNumber)).all fun i => a.log[i]? == b.log[i]?
 
 def durability (s : System Op Output St) : Bool :=
-  let voters := s.replicas.filter fun o => o.status != .recovering
-  voters.all fun r => (List.range r.commitNumber).all fun i =>
-    decide (voters.length + 1 - s.config.quorum ≤
-      (voters.filter fun o => o.log[i]? == r.log[i]?).length)
+  let participants := s.replicas.filter fun o => o.status != .recovering
+  participants.all fun r => (List.range r.commitNumber).all fun i =>
+    decide (participants.length + 1 - s.config.quorum ≤
+      (participants.filter fun o => o.log[i]? == r.log[i]?).length)
 
 /-! ### Candidates: layer 3, one log per view -/
 
 /-- Every piece of a view's log the system holds: `(view, offset, entries)`.
 A `Prepare` is one entry at its op number; `NewState` a segment; `StartView`,
-a `DoViewChange` vote, and a primary's recovery state whole logs; and each
+a `DoViewChange` dvc, and a primary's recovery state whole logs; and each
 replica's log belongs to its last normal view. -/
 def fragments (s : System Op Output St) : List (ViewNumber × Nat × List (LogEntry Op)) :=
   (s.sent.filterMap fun (_, msg) =>
@@ -69,7 +69,7 @@ def fragments (s : System Op Output St) : List (ViewNumber × Nat × List (LogEn
     | .doViewChange _ _ l log _ _ => some (l, 0, log)
     | .recoveryResponse v _ _ (some st) => some (v, 0, st.log)
     | _ => none) ++
-  (s.started.flatMap fun (_, votes) => votes.map fun (_, vote) => (vote.lastNormalView, 0, vote.log)) ++
+  (s.started.flatMap fun (_, dvcs) => dvcs.map fun (_, dvc) => (dvc.lastNormalView, 0, dvc.log)) ++
   s.replicas.map fun r => (r.lastNormalView, 0, r.log)
 
 /-- Two fragments agree wherever they overlap. -/
@@ -109,7 +109,7 @@ def committedAcked (s : System Op Output St) : Bool :=
 
 /-- The commit numbers messages carry are backed the same way a replica's
 own is: every index below one was committed, in a view no later than the
-message's, and the message's view holds that entry. A `DoViewChange` vote
+message's, and the message's view holds that entry. A `DoViewChange`
 is judged by its last normal view. -/
 def messageCommitsBacked (s : System Op Output St) : Bool :=
   let backed (v : ViewNumber) (k : Nat) : Bool :=
@@ -185,31 +185,31 @@ def primaryLongest (s : System Op Output St) : Bool :=
       | _ => true)
 
 /-- The log a `StartView` carries extends the log its view was started
-from: the best of a quorum of votes, by (last normal view, length), which
+from: the best of a quorum of dvcs, by (last normal view, length), which
 the ghost history `started` records. -/
 def startViewChosen (s : System Op Output St) : Bool :=
   s.sent.all fun (_, msg) =>
     match msg with
     | .startView v log _ _ =>
-      s.started.any fun (v', votes) =>
-        v' == v && decide (s.config.quorum ≤ votes.length) &&
-        match Replica.bestVote votes with
+      s.started.any fun (v', dvcs) =>
+        v' == v && decide (s.config.quorum ≤ dvcs.length) &&
+        match Replica.bestDoViewChange dvcs with
         | none => false
         | some best => best.log.isPrefixOf log
     | _ => true
 
-/-- Every vote a view was started from covers every op its voter
-acknowledged in the view the vote is from. -/
-def startedVotesCover (s : System Op Output St) : Bool :=
-  s.started.all fun (_, votes) => votes.all fun (q, vote) =>
+/-- Every DoViewChange a view was started from covers every op its sender
+acknowledged in the view the dvc is from. -/
+def startedDoViewChangesCover (s : System Op Output St) : Bool :=
+  s.started.all fun (_, dvcs) => dvcs.all fun (q, dvc) =>
     s.sent.all fun (_, m) =>
       match m with
-      | .prepareOk v o q' => v != vote.lastNormalView || q' != q || decide (o ≤ vote.log.length)
+      | .prepareOk v o q' => v != dvc.lastNormalView || q' != q || decide (o ≤ dvc.log.length)
       | _ => true
 
-/-- A vote's log covers every op its voter acknowledged in the view the
-vote is from. -/
-def votesCover (s : System Op Output St) : Bool :=
+/-- A DoViewChange's log covers every op its sender acknowledged in the view the
+dvc is from. -/
+def doViewChangesCover (s : System Op Output St) : Bool :=
   s.sent.all fun (_, msg) =>
     match msg with
     | .doViewChange _ q l vlog _ _ =>
@@ -281,7 +281,7 @@ def startedViews (s : System Op Output St) : Bool :=
 /-! ### Candidates: layer 5, committed entries cross view changes -/
 
 /-- Whatever `r` has committed is held, at its index, by every log of a
-later normal view: `StartView` logs, `DoViewChange` votes, and replicas. -/
+later normal view: `StartView` logs, `DoViewChange` dvcs, and replicas. -/
 def committedSurvives (s : System Op Output St) : Bool :=
   s.replicas.all fun r => (List.range r.commitNumber).all fun i =>
     (s.sent.all fun (_, msg) =>
@@ -294,8 +294,8 @@ def committedSurvives (s : System Op Output St) : Bool :=
       | .prepare v' o c n op _ =>
         decide (v' ≤ r.lastNormalView) || o != i + 1 || some (⟨c, n, op⟩ : LogEntry Op) == r.log[i]?
       | _ => true) &&
-    (s.started.all fun (_, votes) => votes.all fun (_, vote) =>
-      decide (vote.lastNormalView ≤ r.lastNormalView) || vote.log[i]? == r.log[i]?) &&
+    (s.started.all fun (_, dvcs) => dvcs.all fun (_, dvc) =>
+      decide (dvc.lastNormalView ≤ r.lastNormalView) || dvc.log[i]? == r.log[i]?) &&
     (s.replicas.all fun q =>
       decide (q.lastNormalView ≤ r.lastNormalView) || q.status == .recovering ||
         q.log[i]? == r.log[i]?)
@@ -311,8 +311,8 @@ def livenessBound : Nat := 1000
 lost, a cluster with a quorum not recovering settles within
 `livenessBound` rounds. -/
 def liveness (m : Machine Op Output St) (s : System Op Output St) : Bool :=
-  let voters := (s.replicas.filter fun r => r.status != .recovering).length
-  decide (voters < s.config.quorum) || Sync.settledWithin m livenessBound (Sync.ofSystem s)
+  let participants := (s.replicas.filter fun r => r.status != .recovering).length
+  decide (participants < s.config.quorum) || Sync.settledWithin m livenessBound (Sync.ofSystem s)
 
 /-! ### All together -/
 
@@ -338,8 +338,8 @@ def all (m : Machine Op Output St) (s : System Op Output St) : List (String × B
     ("replicas_agree", replicasAgree s),
     ("started_views", startedViews s),
     ("start_view_chosen", startViewChosen s),
-    ("started_votes_cover", startedVotesCover s),
-    ("votes_cover", votesCover s),
+    ("started_do_view_change_cover", startedDoViewChangesCover s),
+    ("do_view_change_cover", doViewChangesCover s),
     ("messages_below_view", messagesBelowView s),
     ("recovery_covers_acks", recoveryCoversAcks s),
     ("liveness", liveness m s) ]

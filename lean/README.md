@@ -28,7 +28,7 @@ traces on the real replicas and on this model and diffs what they do.
 |---|---|---|---|
 | Commit bounded | Every replica's commit number is at most its log length, in every reachable state. | `Vsr.commitBounded_of_reachable` | **Proved.** Axioms: `propext`, `Quot.sound`. |
 | Local invariant | The per-replica facts below hold initially and after every handler, idle period, and recovery. | `Vsr.Replica.LocalInv.onMessage`, `.onIdle`, `.recover`, `.new`; lifted by `Vsr.AllLocal.step` | **Proved.** |
-| Well-formed messages | Every message ever sent is well formed: `NewState`, `DoViewChange`, and `StartView` log lengths match the op numbers they carry, commit numbers do not exceed them, a `DoViewChange` vote's last normal view is not ahead of its view, and a recovery state's commit number is within its log. | `Vsr.sentWF_of_reachable`, from `Vsr.Replica.OutboxWF.onMessage`, `.onIdle`, `.recover` | **Proved.** Axioms: `propext`, `Quot.sound`. |
+| Well-formed messages | Every message ever sent is well formed: `NewState`, `DoViewChange`, and `StartView` log lengths match the op numbers they carry, commit numbers do not exceed them, a `DoViewChange` message's last normal view is not ahead of its view, and a recovery state's commit number is within its log. | `Vsr.sentWF_of_reachable`, from `Vsr.Replica.OutboxWF.onMessage`, `.onIdle`, `.recover` | **Proved.** Axioms: `propext`, `Quot.sound`. |
 | No panic | No Rust `assert!` fires in any reachable state. | `Vsr.safety` | `sorry`. Needs layer 5. |
 | Prefix agreement | Two replicas that both committed index `i` hold the same entry there. | `Vsr.safety` | `sorry`. **Follows from `Inv`**: `Vsr.Inv.prefixAgreement` is proved. What is missing is that every step preserves `Inv`. |
 | Durability | Every committed entry is held at its index by enough non-recovering replicas to meet every quorum they could form. | `Vsr.safety` | `sorry`. Needs layers 4 and 5. |
@@ -69,13 +69,13 @@ which is how Lean marks a theorem that rests on an unwritten proof.
 because they are one induction. Working the hardest case through on
 paper, a `PrepareOk` that completes a quorum, showed that the three
 layers alone are not inductive: the argument needs to know that a
-replica's acknowledgement was sent before its vote for a later view, that
+replica's acknowledgement was sent before its DoViewChange for a later view, that
 the primary's log covers everything it has sent in its view, and which
-votes a view's log was chosen from. None of that is in the state, so
+DoViewChange messages a view's log was chosen from. None of that is in the state, so
 `Inv` carries fifteen helper clauses, each with a `Bool` twin in `Vsr/Check.lean`
 that holds on every trace: `Ids`, `AcksCurrent`, `CatchingUpNotPrimary`,
 `AcksHold`, `PrimaryToOthers`, `PrimaryLongest`, `StartViewChosen`,
-`StartedVotesCover`, `MessagesBelowView`, `RecoveryCoversAcks`, `Covered`,
+`StartedDoViewChangesCover`, `MessagesBelowView`, `RecoveryCoversAcks`, `Covered`,
 `ReplicasAgree`, `StartedViews`, `Clean`, and `TwoReplicas`. The last five
 came from proving the first handler: every entry a replica holds must be
 covered by some message of its view, two replicas last normal in the same
@@ -83,10 +83,10 @@ view must agree, every view above zero that anything refers to must have
 been started, and a cluster of one replica never sends anything, so the
 invariant is for clusters of at least two.
 
-One of them needed a history variable. The primary's own vote never
+One of them needed a history variable. The primary's own DoViewChange never
 appears in `sent`, so when its own log is the one a view starts from,
 nothing persistent records what was chosen. The model now has a ghost
-field, `System.started`, the votes every started view was chosen from,
+field, `System.started`, the DoViewChange messages every started view was chosen from,
 filled by the system step from a ghost field on the replica. It is not in
 the Rust and not observable, so the conformance test is unaffected; it
 exists so that a proof can point at it.

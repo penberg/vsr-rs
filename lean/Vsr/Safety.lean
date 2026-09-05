@@ -37,13 +37,13 @@ def PrefixAgreement (s : System Op Output St) : Prop :=
 
 /-- Every committed entry survives any view change: every quorum the
 replicas that are not recovering could form includes one that holds it at
-its index. A recovering replica holds nothing and votes for nothing, so it
+its index. A recovering replica holds nothing and dvcs for nothing, so it
 counts on neither side. With nobody recovering this is a majority. This is
 `Durability` in `simulator/properties.rs`. -/
 def Durability [DecidableEq Op] (s : System Op Output St) : Prop :=
-  let voters := s.replicas.filter fun o => o.status ≠ .recovering
-  ∀ r ∈ voters, ∀ i, i < r.commitNumber →
-    voters.length + 1 - s.config.quorum ≤ (voters.filter fun o => o.log[i]? = r.log[i]?).length
+  let participants := s.replicas.filter fun o => o.status ≠ .recovering
+  ∀ r ∈ participants, ∀ i, i < r.commitNumber →
+    participants.length + 1 - s.config.quorum ≤ (participants.filter fun o => o.log[i]? = r.log[i]?).length
 
 /-! ### The local invariant lifted to the system -/
 

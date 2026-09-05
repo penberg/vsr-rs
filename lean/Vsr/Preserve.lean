@@ -21,7 +21,7 @@ inductive MsgFrag : ReplicaId × Message Op → ViewNumber → Nat → List (Log
   | prepare {to v o c n op k} : MsgFrag (to, .prepare v o c n op k) v (o - 1) [⟨c, n, op⟩]
   | newState {to v log a b k} : MsgFrag (to, .newState v log a b k) v a log
   | startView {to v log o k} : MsgFrag (to, .startView v log o k) v 0 log
-  | vote {to v r l log o k} : MsgFrag (to, .doViewChange v r l log o k) l 0 log
+  | dvc {to v r l log o k} : MsgFrag (to, .doViewChange v r l log o k) l 0 log
   | recovery {to v n r st} : MsgFrag (to, .recoveryResponse v n r (some st)) v 0 st.log
 
 /-- A fragment of a state with one more message is an old fragment or the
@@ -45,11 +45,11 @@ theorem Frag.addMessage {s : System Op Output St} {x : ReplicaId × Message Op} 
     rcases h with h | h
     · exact Or.inl (.startView h)
     · subst h; exact Or.inr .startView
-  | vote h =>
+  | dvc h =>
     simp only [Sent, List.mem_append, List.mem_singleton] at h
     rcases h with h | h
-    · exact Or.inl (.vote h)
-    · subst h; exact Or.inr .vote
+    · exact Or.inl (.dvc h)
+    · subst h; exact Or.inr .dvc
   | recovery h =>
     simp only [Sent, List.mem_append, List.mem_singleton] at h
     rcases h with h | h
@@ -96,9 +96,9 @@ theorem List.set_getElem?_self {α : Type} : ∀ (l : List α) (i : Nat) (x : α
 it was. -/
 theorem System.drain_clean {s : System Op Output St} {id : ReplicaId} {r : Replica Op Output St}
     (hr : s.replicas[id]? = some r) (ho : r.outbox = []) (hp : r.replies = [])
-    (hc : r.chosenVotes = none) : s.drain id r = s := by
+    (hc : r.chosenDoViewChanges = none) : s.drain id r = s := by
   unfold System.drain
-  have : ({ r with outbox := [], replies := [], chosenVotes := none } : Replica Op Output St) = r := by
+  have : ({ r with outbox := [], replies := [], chosenDoViewChanges := none } : Replica Op Output St) = r := by
     rw [← ho, ← hp, ← hc]
   rw [this, List.set_getElem?_self _ _ _ hr, ho, hp, hc]
   simp
@@ -106,10 +106,10 @@ theorem System.drain_clean {s : System Op Output St} {id : ReplicaId} {r : Repli
 /-- A replica that changed nothing but sent one message. -/
 theorem System.drain_send {s : System Op Output St} {id : ReplicaId} {r : Replica Op Output St}
     (hr : s.replicas[id]? = some r) (ho : r.outbox = []) (hp : r.replies = [])
-    (hc : r.chosenVotes = none) (to : ReplicaId) (msg : Message Op) :
+    (hc : r.chosenDoViewChanges = none) (to : ReplicaId) (msg : Message Op) :
     s.drain id (r.send to msg) = { s with sent := s.sent ++ [(to, msg)] } := by
   unfold System.drain Replica.send
-  have : ({ r with outbox := [], replies := [], chosenVotes := none } : Replica Op Output St) = r := by
+  have : ({ r with outbox := [], replies := [], chosenDoViewChanges := none } : Replica Op Output St) = r := by
     rw [← ho, ← hp, ← hc]
   simp only
   rw [this, List.set_getElem?_self _ _ _ hr, ho, hp, hc]
@@ -189,7 +189,7 @@ theorem Inv.addNewState {s : System Op Output St} (hinv : Inv s) {r : Replica Op
     toOthers := ?_
     longest := ?_
     chosen := ?_
-    votesCover := ?_
+    doViewChangesCover := ?_
     belowView := ?_
     recoveryCovers := ?_
     covered := ?_
@@ -236,7 +236,7 @@ theorem Inv.addNewState {s : System Op Output St} (hinv : Inv s) {r : Replica Op
         have := hagree i e e0 hlog he0
         subst this
         exact ⟨he0, hq'⟩
-    obtain ⟨hsv, hvote, hrec, hnew', hprep, hst, hrep'⟩ := hinv.survives v' i e hc' v hlt
+    obtain ⟨hsv, hdvc, hrec, hnew', hprep, hst, hrep'⟩ := hinv.survives v' i e hc' v hlt
     refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
     · intro to log o' k h
       rcases Sent.addMessage h with hold | hnew
@@ -244,7 +244,7 @@ theorem Inv.addNewState {s : System Op Output St} (hinv : Inv s) {r : Replica Op
       · exact absurd (hnewEq hnew).2 (by simp)
     · intro to v'' r' log o' k h
       rcases Sent.addMessage h with hold | hnew
-      · exact hvote to v'' r' log o' k hold
+      · exact hdvc to v'' r' log o' k hold
       · exact absurd (hnewEq hnew).2 (by simp)
     · intro to n r' st h
       rcases Sent.addMessage h with hold | hnew
@@ -299,10 +299,10 @@ theorem Inv.addNewState {s : System Op Output St} (hinv : Inv s) {r : Replica Op
     rcases Sent.addMessage h with hold | hnew
     · exact hinv.chosen to v log o' k hold
     · exact absurd (hnewEq hnew).2 (by simp)
-  · -- started votes cover
-    intro v votes hv q' vote hvote to o' h
+  · -- started DoViewChange messages cover
+    intro v dvcs hv q' dvc hdvc to o' h
     rcases Sent.addMessage h with hold | hnew
-    · exact hinv.votesCover v votes hv q' vote hvote to o' hold
+    · exact hinv.doViewChangesCover v dvcs hv q' dvc hdvc to o' hold
     · exact absurd (hnewEq hnew).2 (by simp)
   · -- messages below view
     intro to msg hm z hz
@@ -323,16 +323,16 @@ theorem Inv.addNewState {s : System Op Output St} (hinv : Inv s) {r : Replica Op
     exact ⟨e, Holds.mono hsent hstarted he⟩
   · -- started views
     obtain ⟨h1, h2, h3⟩ := hinv.startedViews
-    refine ⟨fun v votes hv => ?_, fun v off log hf hpos => ?_, h3⟩
-    · obtain ⟨to, log, o', k, h⟩ := h1 v votes hv
+    refine ⟨fun v dvcs hv => ?_, fun v off log hf hpos => ?_, h3⟩
+    · obtain ⟨to, log, o', k, h⟩ := h1 v dvcs hv
       exact ⟨to, log, o', k, Sent.addMessage_of h⟩
     · rcases Frag.addMessage hf with hf | hf
       · exact h2 v off log hf hpos
       · rw [← hx] at hf
         obtain ⟨rfl, rfl, rfl⟩ := MsgFrag.newState_inv hf
         have hpos' : 0 < r.lastNormalView := by rw [hlnv]; exact hpos
-        obtain ⟨votes, hv⟩ := h3 r hr hnr hpos'
-        exact ⟨votes, by rw [← hlnv]; exact hv⟩
+        obtain ⟨dvcs, hv⟩ := h3 r hr hnr hpos'
+        exact ⟨dvcs, by rw [← hlnv]; exact hv⟩
 
 /-! ### Commit steps: a replica raising its commit within a backed bound -/
 
@@ -420,15 +420,15 @@ theorem Backed.max {s : System Op Output St} {v a b} (ha : Backed s v a) (hb : B
 
 /-- Draining a replica that changed but sent nothing just replaces it. -/
 theorem System.drain_replace {s : System Op Output St} {id : ReplicaId} {r' : Replica Op Output St}
-    (ho : r'.outbox = []) (hp : r'.replies = []) (hc : r'.chosenVotes = none) :
+    (ho : r'.outbox = []) (hp : r'.replies = []) (hc : r'.chosenDoViewChanges = none) :
     s.drain id r' = { s with replicas := s.replicas.set id r' } := by
   unfold System.drain
-  have : ({ r' with outbox := [], replies := [], chosenVotes := none } : Replica Op Output St) = r' := by
+  have : ({ r' with outbox := [], replies := [], chosenDoViewChanges := none } : Replica Op Output St) = r' := by
     rw [← ho, ← hp, ← hc]
   rw [this, ho, hp, hc]; simp
 
 /-- A replica changed to `r'` that sends nothing (empty outbox, replies,
-chosen votes) and agrees with the old `r` on every field the invariant
+chosen dvcs) and agrees with the old `r` on every field the invariant
 reads except the commit number, which is backed, preserves `Inv`. Nothing
 is sent, so `sent` and `started` are unchanged; only the replaced replica
 is re-checked. -/
@@ -438,7 +438,7 @@ theorem Inv.replace {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
     (hlnv : r'.lastNormalView = r.lastNormalView) (hcatch : r'.catchingUp = r.catchingUp)
     (hself : r'.selfId = r.selfId) (hconf : r'.config = r.config) (hacks : r'.acks = r.acks)
     (hnonce : r'.recoveryNonce = r.recoveryNonce) (hpanic : r'.panicked = false)
-    (hout : r'.outbox = []) (hreplies : r'.replies = []) (hcv : r'.chosenVotes = none)
+    (hout : r'.outbox = []) (hreplies : r'.replies = []) (hcv : r'.chosenDoViewChanges = none)
     (hbacked : Backed s r.lastNormalView r'.commitNumber) (hloc : Replica.LocalInv r') :
     Inv (s.drain id r') := by
   have hmem : r ∈ s.replicas := List.mem_of_getElem? hr
@@ -472,7 +472,7 @@ theorem Inv.replace {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
   refine {
     noPanic := ?_, ids := ?_, local_ := ?_, drained := ?_, wf := ?_, oneLog := ?_,
     backed := ?_, survives := ?_, acks := ?_, catching := ?_, acksHold := ?_, toOthers := ?_,
-    longest := ?_, chosen := ?_, votesCover := ?_, belowView := ?_,
+    longest := ?_, chosen := ?_, doViewChangesCover := ?_, belowView := ?_,
     recoveryCovers := ?_, covered := ?_, agree := ?_, startedViews := ?_, clean := ?_, two := ?_ }
   · intro x hx; rcases hrepl x hx with h | rfl
     · exact hinv.noPanic x h
@@ -513,7 +513,7 @@ theorem Inv.replace {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
       fun to n r0 st hs => h3 to n r0 st ((hSent ..).mp hs),
       fun to log a b k hs ha => h4 to log a b k ((hSent ..).mp hs) ha,
       fun to c n op k hs => h5 to c n op k ((hSent ..).mp hs),
-      fun v'' votes q vote hstd hin hlv => h6 v'' votes q vote (fT' _ hstd) hin hlv,
+      fun v'' dvcs q dvc hstd hin hlv => h6 v'' dvcs q dvc (fT' _ hstd) hin hlv,
       fun z hz hzv hzr => ?_⟩
     rcases hrepl z hz with h | rfl
     · exact h7 z h hzv hzr
@@ -553,10 +553,10 @@ theorem Inv.replace {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
       · rw [hlog]; exact f2 z h2 (hview ▸ hzv) hzr
       · exact Nat.le_refl _
   · intro to v log o k hs
-    obtain ⟨votes, best, hv, hq, hnd, hb, hpre⟩ := hinv.chosen to v log o k ((hSent ..).mp hs)
-    exact ⟨votes, best, fT _ hv, by rw [hce]; exact hq, hnd, hb, hpre⟩
-  · intro v votes hv q vote hin to o hs
-    exact hinv.votesCover v votes (fT' _ hv) q vote hin to o ((hSent ..).mp hs)
+    obtain ⟨dvcs, best, hv, hq, hnd, hb, hpre⟩ := hinv.chosen to v log o k ((hSent ..).mp hs)
+    exact ⟨dvcs, best, fT _ hv, by rw [hce]; exact hq, hnd, hb, hpre⟩
+  · intro v dvcs hv q dvc hin to o hs
+    exact hinv.doViewChangesCover v dvcs (fT' _ hv) q dvc hin to o ((hSent ..).mp hs)
   · intro to msg hs z hz
     rcases hrepl z hz with h | rfl
     · exact hinv.belowView to msg ((hSent ..).mp hs) z h
@@ -583,15 +583,15 @@ theorem Inv.replace {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
     exact hinv.agree z0 hz0 w0 hw0 (by rw [hz0lnv, hw0lnv]; exact hlnvzw) i e e'
       (by rw [hz0log]; exact he) (by rw [hw0log]; exact he')
   · obtain ⟨g1, g2, g3⟩ := hinv.startedViews
-    refine ⟨fun v votes hv => ?_,
-      fun v off log hf hpos => (g2 v off log ((hFrag ..).mp hf) hpos).imp (fun votes hh => fT _ hh),
+    refine ⟨fun v dvcs hv => ?_,
+      fun v off log hf hpos => (g2 v off log ((hFrag ..).mp hf) hpos).imp (fun dvcs hh => fT _ hh),
       fun z hz hzr hzv => ?_⟩
-    · obtain ⟨to, log, o, k, h⟩ := g1 v votes (fT' _ hv)
+    · obtain ⟨to, log, o, k, h⟩ := g1 v dvcs (fT' _ hv)
       exact ⟨to, log, o, k, (hSent ..).mpr h⟩
     · rcases hrepl z hz with h | rfl
-      · exact (g3 z h hzr hzv).imp (fun votes hh => fT _ hh)
+      · exact (g3 z h hzr hzv).imp (fun dvcs hh => fT _ hh)
       · rw [hlnv]
-        exact (g3 r hmem (hstat ▸ hzr) (by rw [hlnv] at hzv; exact hzv)).imp (fun votes hh => fT _ hh)
+        exact (g3 r hmem (hstat ▸ hzr) (by rw [hlnv] at hzv; exact hzv)).imp (fun dvcs hh => fT _ hh)
   · intro z hz; rcases hrepl z hz with h | rfl
     · exact hinv.clean z h
     · exact ⟨hreplies, hcv⟩
@@ -604,7 +604,7 @@ theorem Inv.replaceVC {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
     (hcommit : r'.commitNumber = r.commitNumber) (hviewge : r.viewNumber ≤ r'.viewNumber)
     (hself : r'.selfId = r.selfId) (hconf : r'.config = r.config) (_hacks : r'.acks = r.acks)
     (_hnonce : r'.recoveryNonce = r.recoveryNonce) (hpanic : r'.panicked = false)
-    (hout : r'.outbox = []) (hreplies : r'.replies = []) (hcv : r'.chosenVotes = none)
+    (hout : r'.outbox = []) (hreplies : r'.replies = []) (hcv : r'.chosenDoViewChanges = none)
     (hrnr : r.status ≠ .recovering) (hr'nn : r'.status ≠ .normal) (hr'nr : r'.status ≠ .recovering)
     (hcatchprim : r'.catchingUp = true → r'.selfId ≠ r'.config.primaryId r'.viewNumber)
     (hloc : Replica.LocalInv r') :
@@ -638,7 +638,7 @@ theorem Inv.replaceVC {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
   refine {
     noPanic := ?_, ids := ?_, local_ := ?_, drained := ?_, wf := ?_, oneLog := ?_,
     backed := ?_, survives := ?_, acks := ?_, catching := ?_, acksHold := ?_, toOthers := ?_,
-    longest := ?_, chosen := ?_, votesCover := ?_, belowView := ?_,
+    longest := ?_, chosen := ?_, doViewChangesCover := ?_, belowView := ?_,
     recoveryCovers := ?_, covered := ?_, agree := ?_, startedViews := ?_, clean := ?_, two := ?_ }
   · intro x hx; rcases hrepl x hx with h | rfl
     · exact hinv.noPanic x h
@@ -679,7 +679,7 @@ theorem Inv.replaceVC {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
       fun to n r0 st hs => h3 to n r0 st ((hSent ..).mp hs),
       fun to log a b k hs ha => h4 to log a b k ((hSent ..).mp hs) ha,
       fun to c n op k hs => h5 to c n op k ((hSent ..).mp hs),
-      fun v'' votes q vote hstd hin hlv => h6 v'' votes q vote (fT' _ hstd) hin hlv,
+      fun v'' dvcs q dvc hstd hin hlv => h6 v'' dvcs q dvc (fT' _ hstd) hin hlv,
       fun z hz hzv hzr => ?_⟩
     rcases hrepl z hz with h | rfl
     · exact h7 z h hzv hzr
@@ -712,10 +712,10 @@ theorem Inv.replaceVC {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
       · rw [hlog]; exact f2 r hmem (hlnv ▸ hzv) hrnr
     · exact absurd hpn hr'nn
   · intro to v log o k hs
-    obtain ⟨votes, best, hv, hq, hnd, hb, hpre⟩ := hinv.chosen to v log o k ((hSent ..).mp hs)
-    exact ⟨votes, best, fT _ hv, by rw [hce]; exact hq, hnd, hb, hpre⟩
-  · intro v votes hv q vote hin to o hs
-    exact hinv.votesCover v votes (fT' _ hv) q vote hin to o ((hSent ..).mp hs)
+    obtain ⟨dvcs, best, hv, hq, hnd, hb, hpre⟩ := hinv.chosen to v log o k ((hSent ..).mp hs)
+    exact ⟨dvcs, best, fT _ hv, by rw [hce]; exact hq, hnd, hb, hpre⟩
+  · intro v dvcs hv q dvc hin to o hs
+    exact hinv.doViewChangesCover v dvcs (fT' _ hv) q dvc hin to o ((hSent ..).mp hs)
   · intro to msg hs z hz
     rcases hrepl z hz with h | rfl
     · exact hinv.belowView to msg ((hSent ..).mp hs) z h
@@ -745,15 +745,15 @@ theorem Inv.replaceVC {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
     exact hinv.agree z0 hz0 w0 hw0 (by rw [hz0lnv, hw0lnv]; exact hlnvzw) i e e'
       (by rw [hz0log]; exact he) (by rw [hw0log]; exact he')
   · obtain ⟨g1, g2, g3⟩ := hinv.startedViews
-    refine ⟨fun v votes hv => ?_,
-      fun v off log hf hpos => (g2 v off log ((hFrag ..).mp hf) hpos).imp (fun votes hh => fT _ hh),
+    refine ⟨fun v dvcs hv => ?_,
+      fun v off log hf hpos => (g2 v off log ((hFrag ..).mp hf) hpos).imp (fun dvcs hh => fT _ hh),
       fun z hz hzr hzv => ?_⟩
-    · obtain ⟨to, log, o, k, h⟩ := g1 v votes (fT' _ hv)
+    · obtain ⟨to, log, o, k, h⟩ := g1 v dvcs (fT' _ hv)
       exact ⟨to, log, o, k, (hSent ..).mpr h⟩
     · rcases hrepl z hz with h | rfl
-      · exact (g3 z h hzr hzv).imp (fun votes hh => fT _ hh)
+      · exact (g3 z h hzr hzv).imp (fun dvcs hh => fT _ hh)
       · rw [hlnv]
-        exact (g3 r hmem hrnr (by rw [hlnv] at hzv; exact hzv)).imp (fun votes hh => fT _ hh)
+        exact (g3 r hmem hrnr (by rw [hlnv] at hzv; exact hzv)).imp (fun dvcs hh => fT _ hh)
   · intro z hz; rcases hrepl z hz with h | rfl
     · exact hinv.clean z h
     · exact ⟨hreplies, hcv⟩
@@ -762,13 +762,13 @@ theorem Inv.replaceVC {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
 
 
 theorem System.drain_replaceSend {s : System Op Output St} {id : ReplicaId}
-    {r' : Replica Op Output St} (ho : r'.outbox = []) (hp : r'.replies = []) (hc : r'.chosenVotes = none)
+    {r' : Replica Op Output St} (ho : r'.outbox = []) (hp : r'.replies = []) (hc : r'.chosenDoViewChanges = none)
     (to : ReplicaId) (msg : Message Op) :
     s.drain id (r'.send to msg) =
       { s with replicas := s.replicas.set id r', sent := s.sent ++ [(to, msg)] } := by
   unfold System.drain Replica.send
   have hcl : ({ { r' with outbox := r'.outbox ++ [(to, msg)] } with
-      outbox := [], replies := [], chosenVotes := none } : Replica Op Output St) = r' := by
+      outbox := [], replies := [], chosenDoViewChanges := none } : Replica Op Output St) = r' := by
     rw [← ho, ← hp, ← hc]
   rw [hcl]
   simp only [ho, hp, hc, List.nil_append, List.append_nil]
@@ -789,7 +789,7 @@ theorem Inv.commitStep {s : System Op Output St} (hinv : Inv s) {id : ReplicaId}
     (by simp) (by rw [commitUpTo_false_panicked m r k hlocal.1 hkle]; exact hinv.noPanic r hmem)
     (by rw [Replica.commitUpTo_outbox]; exact hinv.drained r hmem)
     (by rw [Replica.commitUpTo_replies_false]; exact hclean.1)
-    (by rw [Replica.commitUpTo_chosenVotes]; exact hclean.2)
+    (by rw [Replica.commitUpTo_chosenDoViewChanges]; exact hclean.2)
     hbackedNew (hlocal.commitUpTo m k false)
 
 /-- Adding a `GetState` message keeps `Inv`. It carries no log and is not
@@ -854,7 +854,7 @@ theorem Inv.addGetState {s : System Op Output St} (hinv : Inv s) (to q : Replica
     drained := fun x hx => hinv.drained x (hre ▸ hx)
     wf := ?_, oneLog := ?_, backed := ?_, survives := ?_, acks := ?_
     catching := fun x hx hc => hinv.catching x (hre ▸ hx) hc
-    acksHold := ?_, toOthers := ?_, longest := ?_, chosen := ?_, votesCover := ?_,
+    acksHold := ?_, toOthers := ?_, longest := ?_, chosen := ?_, doViewChangesCover := ?_,
     belowView := ?_, recoveryCovers := ?_, covered := ?_
     agree := fun z hz w hw h i e e' he he' => hinv.agree z (hre ▸ hz) w (hre ▸ hw) h i e e' he he'
     startedViews := ?_
@@ -874,7 +874,7 @@ theorem Inv.addGetState {s : System Op Output St} (hinv : Inv s) (to q : Replica
     obtain ⟨h1, h2, h3, h4, h5, h6, h7⟩ := hinv.survives v' i e (hComm _ _ _ hc) w hlt
     refine ⟨fun t log o0 k hs => ?_, fun t v'' r0 log o0 k hs => ?_, fun t n r0 st hs => ?_,
       fun t log a b k hs ha => ?_, fun t c n op k hs => ?_,
-      fun v'' votes qq vote hstd hin hlv => h6 v'' votes qq vote (fT' _ hstd) hin hlv,
+      fun v'' dvcs qq dvc hstd hin hlv => h6 v'' dvcs qq dvc (fT' _ hstd) hin hlv,
       fun z hz => h7 z (hre ▸ hz)⟩
     · rcases hSentSplit hs with h | h; exact h1 t log o0 k h; simp at h
     · rcases hSentSplit hs with h | h; exact h2 t v'' r0 log o0 k h; simp at h
@@ -898,12 +898,12 @@ theorem Inv.addGetState {s : System Op Output St} (hinv : Inv s) (to q : Replica
       fun t o0 qq hs => by rcases hSentSplit hs with h | h; exact f3 t o0 qq h; simp at h⟩
   · intro t v0 log o0 k hs
     rcases hSentSplit hs with h | h
-    · obtain ⟨votes, best, hv, hq, hnd, hb, hpre⟩ := hinv.chosen t v0 log o0 k h
-      exact ⟨votes, best, fT _ hv, by rw [hce]; exact hq, hnd, hb, hpre⟩
+    · obtain ⟨dvcs, best, hv, hq, hnd, hb, hpre⟩ := hinv.chosen t v0 log o0 k h
+      exact ⟨dvcs, best, fT _ hv, by rw [hce]; exact hq, hnd, hb, hpre⟩
     · simp at h
-  · intro v0 votes hv qq vote hin t o0 hs
+  · intro v0 dvcs hv qq dvc hin t o0 hs
     rcases hSentSplit hs with h | h
-    · exact hinv.votesCover v0 votes (fT' _ hv) qq vote hin t o0 h
+    · exact hinv.doViewChangesCover v0 dvcs (fT' _ hv) qq dvc hin t o0 h
     · simp at h
   · intro t msg hs z hz
     rcases hSentSplit hs with h | h
@@ -920,10 +920,10 @@ theorem Inv.addGetState {s : System Op Output St} (hinv : Inv s) (to q : Replica
     obtain ⟨e, he⟩ := hinv.covered z (hre ▸ hz) i hi
     exact ⟨e, (hHolds ..).mpr he⟩
   · obtain ⟨g1, g2, g3⟩ := hinv.startedViews
-    refine ⟨fun w votes hv => ?_,
-      fun w off log hf hpos => (g2 w off log ((hFrag ..).mp hf) hpos).imp (fun votes hh => fT _ hh),
-      fun z hz hzr hzv => (g3 z (hre ▸ hz) hzr hzv).imp (fun votes hh => fT _ hh)⟩
-    obtain ⟨t, log, o0, k, h⟩ := g1 w votes (fT' _ hv)
+    refine ⟨fun w dvcs hv => ?_,
+      fun w off log hf hpos => (g2 w off log ((hFrag ..).mp hf) hpos).imp (fun dvcs hh => fT _ hh),
+      fun z hz hzr hzv => (g3 z (hre ▸ hz) hzr hzv).imp (fun dvcs hh => fT _ hh)⟩
+    obtain ⟨t, log, o0, k, h⟩ := g1 w dvcs (fT' _ hv)
     exact ⟨t, log, o0, k, hSentOf h⟩
 
 
@@ -966,7 +966,7 @@ theorem Inv.catchUpChange {s : System Op Output St} (hinv : Inv s) {id : Replica
     (hXnr : X.status ≠ .recovering) (hXself : X.selfId = r.selfId) (hXconf : X.config = r.config)
     (hXacks : X.acks = r.acks) (hXnonce : X.recoveryNonce = r.recoveryNonce)
     (hXpanic : X.panicked = false) (hXout : X.outbox = []) (hXrep : X.replies = [])
-    (hXcv : X.chosenVotes = none) (hloc : Replica.LocalInv X)
+    (hXcv : X.chosenDoViewChanges = none) (hloc : Replica.LocalInv X)
     (hvle : r.viewNumber ≤ X.viewNumber) (hnr : r.status ≠ .recovering)
     (hcp : X.catchingUp = true → id ≠ s.config.primaryId X.viewNumber) :
     Inv (s.drain id (X.sendGetState r.commitNumber)) := by
