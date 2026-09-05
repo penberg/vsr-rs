@@ -51,8 +51,8 @@ pub fn default_properties() -> Vec<Box<dyn Property>> {
 /// Every committed op is held by enough replicas to survive any view
 /// change: every quorum the replicas that are not recovering could form
 /// must include one that holds it. With nobody recovering that is a
-/// majority. A recovering replica holds nothing and votes for nothing, so
-/// it counts on neither side. A primary only commits on a quorum of
+/// majority. A recovering replica holds nothing and takes part in no quorum,
+/// so it counts on neither side. A primary only commits on a quorum of
 /// `PrepareOk` messages, and a backup only acknowledges an op once it is in
 /// its log, so this must hold at the tick the commit happens, on whichever
 /// replica committed it. Committed prefixes are never truncated, so each
@@ -77,12 +77,12 @@ impl Property for Durability {
     fn check(&mut self, ctx: &SimContext) -> Result<()> {
         self.verified.resize(ctx.replicas.len(), 0);
         let quorum = ctx.replicas.len() / 2 + 1;
-        let voters = ctx
+        let participants = ctx
             .replicas
             .iter()
             .filter(|replica| !replica.is_recovering())
             .count();
-        let needed = (voters + 1).saturating_sub(quorum);
+        let needed = (participants + 1).saturating_sub(quorum);
         for (id, replica) in ctx.replicas.iter().enumerate() {
             let commit = replica.commit_number();
             let log = replica.log();
@@ -94,7 +94,7 @@ impl Property for Durability {
                     .count();
                 ensure!(
                     copies >= needed,
-                    "tick {}: replica {id} committed op at index {i} held by {copies} of {voters} replicas not recovering, {needed} needed to meet every quorum of {quorum}",
+                    "tick {}: replica {id} committed op at index {i} held by {copies} of {participants} replicas not recovering, {needed} needed to meet every quorum of {quorum}",
                     ctx.tick
                 );
             }

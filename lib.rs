@@ -400,9 +400,10 @@ struct ClientEntry<Output> {
     reply: Option<Output>,
 }
 
-/// What a replica reported in `DoViewChange`.
+/// What a replica reported in a `DoViewChange` message: the view it was
+/// last normal in, its log, and its commit number.
 #[derive(Debug)]
-struct ViewChangeVote<Op> {
+struct DoViewChange<Op> {
     last_normal_view: ViewNumber,
     log: Vec<LogEntry<Op>>,
     commit_number: CommitID,
@@ -459,9 +460,9 @@ pub struct Replica<SM: StateMachine> {
     start_view_change_from: BTreeSet<ReplicaID>,
     /// Whether this replica has sent `DoViewChange` for the current view.
     do_view_change_sent: bool,
-    /// `DoViewChange` votes for the current view, if this replica is to be
-    /// its primary.
-    do_view_change_votes: BTreeMap<ReplicaID, ViewChangeVote<SM::Input>>,
+    /// Replicas that sent `DoViewChange` for the current view, with what they
+    /// reported, if this replica is to be its primary.
+    do_view_change_from: BTreeMap<ReplicaID, DoViewChange<SM::Input>>,
     /// Whether this replica has learned that the current view has started
     /// without it, and is fetching the view's state from its primary.
     catching_up: bool,
@@ -492,7 +493,7 @@ impl<SM: StateMachine> Replica<SM> {
             idle_periods_stable: 0,
             start_view_change_from: BTreeSet::new(),
             do_view_change_sent: false,
-            do_view_change_votes: BTreeMap::new(),
+            do_view_change_from: BTreeMap::new(),
             catching_up: false,
             recovery_nonce: 0,
             recovery_responses: BTreeMap::new(),
@@ -606,12 +607,12 @@ impl<SM: StateMachine> Replica<SM> {
                 commit_number,
             } => {
                 assert_eq!(log.len(), op_number);
-                let vote = ViewChangeVote {
+                let dvc = DoViewChange {
                     last_normal_view,
                     log,
                     commit_number,
                 };
-                self.on_do_view_change(view_number, replica_id, vote);
+                self.on_do_view_change(view_number, replica_id, dvc);
             }
             Message::StartView {
                 view_number,
@@ -926,7 +927,7 @@ impl<SM: StateMachine> Replica<SM> {
         &mut self,
         view_number: ViewNumber,
         replica_id: ReplicaID,
-        vote: ViewChangeVote<SM::Input>,
+        dvc: DoViewChange<SM::Input>,
     ) {
         if view_number < self.view_number || self.config.primary_id(view_number) != self.self_id {
             return;
@@ -938,7 +939,7 @@ impl<SM: StateMachine> Replica<SM> {
             self.send_start_view(replica_id);
             return;
         }
-        self.record_do_view_change(replica_id, vote);
+        self.record_do_view_change(replica_id, dvc);
     }
 
     /// The new primary starts the view with the log it chose. Backups
@@ -993,7 +994,7 @@ impl<SM: StateMachine> Replica<SM> {
     fn clear_view_change_state(&mut self) {
         self.start_view_change_from.clear();
         self.do_view_change_sent = false;
-        self.do_view_change_votes.clear();
+        self.do_view_change_from.clear();
     }
 
     /// Sends `DoViewChange` once `f` other replicas want the same view.
@@ -1013,47 +1014,47 @@ impl<SM: StateMachine> Replica<SM> {
     /// that is us.
     fn send_do_view_change(&mut self) {
         let view_number = self.view_number;
-        let vote = ViewChangeVote {
+        let dvc = DoViewChange {
             last_normal_view: self.last_normal_view,
             log: self.log.clone(),
             commit_number: self.commit_number,
         };
         let primary_id = self.config.primary_id(view_number);
         if primary_id == self.self_id {
-            self.record_do_view_change(self.self_id, vote);
+            self.record_do_view_change(self.self_id, dvc);
         } else {
             self.send(
                 primary_id,
                 Message::DoViewChange {
                     view_number,
                     replica_id: self.self_id,
-                    last_normal_view: vote.last_normal_view,
-                    op_number: vote.log.len(),
-                    log: vote.log,
-                    commit_number: vote.commit_number,
+                    last_normal_view: dvc.last_normal_view,
+                    op_number: dvc.log.len(),
+                    log: dvc.log,
+                    commit_number: dvc.commit_number,
                 },
             );
         }
     }
 
-    /// Records a `DoViewChange` vote and, with a quorum of them, starts the
+    /// Records a `DoViewChange` and, with a quorum of them, starts the
     /// view: the log is the one from the latest normal view, the longest if
     /// several, which by quorum intersection holds every committed op.
-    fn record_do_view_change(&mut self, replica_id: ReplicaID, vote: ViewChangeVote<SM::Input>) {
-        self.do_view_change_votes.insert(replica_id, vote);
-        if self.do_view_change_votes.len() < self.config.quorum() {
+    fn record_do_view_change(&mut self, replica_id: ReplicaID, dvc: DoViewChange<SM::Input>) {
+        self.do_view_change_from.insert(replica_id, dvc);
+        if self.do_view_change_from.len() < self.config.quorum() {
             return;
         }
         let best = self
-            .do_view_change_votes
+            .do_view_change_from
             .values()
-            .max_by_key(|vote| (vote.last_normal_view, vote.log.len()))
+            .max_by_key(|dvc| (dvc.last_normal_view, dvc.log.len()))
             .unwrap();
         let log = best.log.clone();
         let commit_number = self
-            .do_view_change_votes
+            .do_view_change_from
             .values()
-            .map(|vote| vote.commit_number)
+            .map(|dvc| dvc.commit_number)
             .max()
             .unwrap();
         trace!(

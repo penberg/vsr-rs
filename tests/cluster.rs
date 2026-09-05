@@ -568,9 +568,9 @@ fn test_view_change_timeout_backs_off() {
 }
 
 /// Replica 1 crashes and comes back with no memory. Until it has recovered
-/// it must take no part in the protocol: not acknowledge, not vote. Once
-/// the others answer its Recovery, it must hold the primary's log and
-/// state, and take part again.
+/// it must take no part in the protocol: not acknowledge, not join a view
+/// change. Once the others answer its Recovery, it must hold the primary's
+/// log and state, and take part again.
 #[test]
 fn test_recovery_after_reboot() {
     let mut cluster = Cluster::new(3);
