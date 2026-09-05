@@ -71,11 +71,11 @@
 \newcommand{\viewchange}{\textsc{view-change}}
 \newcommand{\transfer}{\textsc{transfer}}
 \newcommand{\recovering}{\textsc{recovering}}
-\newcommand{\Local}{\textsc{Local-consistency}}
+\newcommand{\Local}{\textsc{Replica-consistency}}
 \newcommand{\WellFormed}{\textsc{Message-consistency}}
 \newcommand{\OneLog}{\textsc{View-agreement}}
-\newcommand{\CommitsBacked}{\textsc{Commits-backed}}
-\newcommand{\Survival}{\textsc{Survival}}
+\newcommand{\CommitsBacked}{\textsc{Commit-quorums}}
+\newcommand{\Survival}{\textsc{Commit-survival}}
 \newcommand{\dep}[1]{\Comment{App.~\ref{#1}}}
 \newcommand{\why}[1]{\Comment{Lemma~\ref{#1}}}
 \newcommand{\whydep}[2]{\Comment{Lemma~\ref{#1}; App.~\ref{#2}}}
@@ -141,11 +141,11 @@ $\mathcal{R}$ be the set of replicas not currently recovering
 \label{thm:log}
 In every reachable cluster state:
 \begin{enumerate}[nosep,label=(\roman*)]
-  \item \emph{Prefix agreement.} If $i < k_a$ and $i < k_b$ then
-    $L_a[i] = L_b[i]$.
+  \item \emph{Prefix agreement.} If $n \le k_a$ and $n \le k_b$ then
+    $L_a[n] = L_b[n]$.
   \item \emph{Durability.} For every $r \in \mathcal{R}$ and
-    $i < k_r$, at least $|\mathcal{R}| + 1 - Q$ replicas in
-    $\mathcal{R}$ hold $L_r[i]$ at index $i$.
+    $n \le k_r$, at least $|\mathcal{R}| + 1 - Q$ replicas in
+    $\mathcal{R}$ hold $L_r[n]$ at op-number $n$.
   \item \emph{Commit bounded.} $k_r \le |L_r|$.
 \end{enumerate}
 \end{theorem}
@@ -181,17 +181,17 @@ at once.
 
 $\Inv$ has five parts, named for what they say. \Local: each replica's
 own fields are consistent. \WellFormed: each message's fields agree with
-one another. \OneLog: within a view, an index determines its entry, so every
-fragment of a view's log that the history holds agrees with every other. \CommitsBacked: every commit number is
-justified by a quorum of acknowledgements. \Survival: whatever was
-committed in a view is held, at the same index, by every later view. The lemma
+one another. \OneLog: within a view, an op-number determines its entry, so every
+fragment of a view's log that the history holds agrees with every other. \CommitsBacked: every commit number, on a
+replica or in a message, has a quorum of acknowledgements behind every op-number up to it. \Survival: whatever was
+committed in a view is held, at the same op-number, by every later view. The lemma
 that carries the induction is the following.
 
 \begin{lemma}[The chosen log survives]
 \label{lem:chosen-intro}
 If view $v$ was started from a quorum of votes $V$, and entry $e$ was
-committed at index $i$ in some view $u < v$, then the vote of $V$ from
-which $v$'s log was chosen holds $e$ at $i$.
+committed at op-number $n$ in some view $u < v$, then the vote of $V$
+from which $v$'s log was chosen holds $e$ at $n$.
 \end{lemma}
 
 Its proof is a strong induction on $v$: the quorum that acknowledged $e$
@@ -229,10 +229,11 @@ primary of view $v$.
 
 \begin{definition}[Log]
 A log $L$ is a finite sequence of entries $e = (c, s, \mathit{op})$,
-client identity, request number, operation, indexed from zero. $L[i]$ is
-the entry at index $i$, $L[a{:}b]$ the entries at indices $a, \dots,
-b-1$, and $L \cdot e$ the log with $e$ appended. The \emph{op number} of
-$L[i]$ is $i+1$.
+client identity, request number, operation. The position of an entry in
+the log is its \emph{op-number}, counted from $1$: $L[n]$ is the entry
+with op-number $n$, for $1 \le n \le |L|$. $L(a{..}b]$ is the entries
+with op-numbers $a+1, \dots, b$, and $L \cdot e$ is the log with $e$
+appended, at op-number $|L|+1$.
 \end{definition}
 
 \begin{definition}[Replica]
@@ -342,9 +343,9 @@ the pieces of a view's log that the history holds.
 
 \begin{definition}[Fragment]
 \label{def:frag}
-$\Frag(v, \mathit{off}, L)$: the history holds $L$ as a piece of view
-$v$'s log beginning at index $\mathit{off}$. One rule per kind of message
-that carries log:
+$\Frag(v, a, L)$: the history holds $L$ as a piece of view $v$'s log,
+the entries with op-numbers $a+1, \dots, a+|L|$. One rule per kind of
+message that carries log:
 \[
 \begin{array}{ll}
 \Sent(\_, \msg{Prepare}(v, n, e, \_)) & \Rightarrow \Frag(v, n-1, [e]) \\
@@ -365,28 +366,28 @@ consistent with the rest.
 \end{remark}
 
 \begin{definition}[Holds]
-$\Holds(v, i, e)$: there are $\mathit{off} \le i$ and $L$ with
-$\Frag(v, \mathit{off}, L)$ and $L[i - \mathit{off}] = e$.
+$\Holds(v, n, e)$: there are $a < n$ and $L$ with $\Frag(v, a, L)$ and
+$L[n - a] = e$.
 \end{definition}
 
 \begin{definition}[Acknowledged]
 \leavevmode
 \begin{enumerate}[nosep,label=(\roman*)]
-  \item $\Acked(v, i, q)$: $q = \primary(v)$, or the history holds
-    $\msg{PrepareOk}(v, o, q)$ for some $o > i$.
-  \item $\QuorumAcked(v, i)$: there are $Q$ distinct identities $q < N$
-    with $\Acked(v, i, q)$.
+  \item $\Acked(v, n, q)$: $q = \primary(v)$, or the history holds
+    $\msg{PrepareOk}(v, o, q)$ for some $o \ge n$.
+  \item $\QuorumAcked(v, n)$: there are $Q$ distinct identities $q < N$
+    with $\Acked(v, n, q)$.
 \end{enumerate}
 \end{definition}
 
 \begin{definition}[Committed]
-$\Committed(v, i, e)$: $\Holds(v, i, e)$ and $\QuorumAcked(v, i)$.
+$\Committed(v, n, e)$: $\Holds(v, n, e)$ and $\QuorumAcked(v, n)$.
 \end{definition}
 
 \begin{definition}[Backed]
-$\Backed(v, k)$: for every $i < k$,
+$\Backed(v, k)$: for every op-number $n \le k$,
 \[
-\exists\, e,\ v' \le v.\quad \Committed(v', i, e) \wedge \Holds(v, i, e).
+\exists\, e,\ v' \le v.\quad \Committed(v', n, e) \wedge \Holds(v, n, e).
 \]
 \end{definition}
 
@@ -424,20 +425,21 @@ $n > 0$; a \msg{RecoveryResponse} state has $k \le |L|$.
 \label{def:viewagreement}
 \leavevmode
 \begin{enumerate}[nosep,label=(\roman*)]
-  \item Within a view, an index determines its entry:
-    $\Holds(v, i, e) \wedge \Holds(v, i, e') \Rightarrow e = e'$.
+  \item Within a view, an op-number determines its entry:
+    $\Holds(v, n, e) \wedge \Holds(v, n, e') \Rightarrow e = e'$.
   \item Every replica's log agrees with the fragments of the view it
-    came from: $L_r[i] = e \wedge \Holds(\ell_r, i, e') \Rightarrow e = e'$.
+    came from: $L_r[n] = e \wedge \Holds(\ell_r, n, e') \Rightarrow e = e'$.
 \end{enumerate}
 \end{definition}
 
 \begin{remark}
-\OneLog{} says nothing across views: index $i$ may hold different
-entries in views $4$ and $5$, and \Survival{} governs which of them
-matter. It is the property Raft calls log matching, with views for
+\OneLog{} says nothing across views: op-number $n$ may name different
+entries in views $4$ and $5$, which is the paper's own observation
+(\S4.2) that two operations can be assigned the same op-number only
+across a view change, and \Survival{} governs which of them matter. It is the property Raft calls log matching, with views for
 terms and message fragments alongside replica logs, and it is what lets
-the rest of the invariant say ``the entry at index $i$ in view $v$'' and
-mean one thing.
+the rest of the invariant say ``the entry at op-number $n$ in view $v$''
+and mean one thing.
 \end{remark}
 
 \begin{definition}[\CommitsBacked]
@@ -447,12 +449,19 @@ being judged by its last normal view.
 \end{definition}
 
 \begin{definition}[\Survival]
-If $\Committed(v', i, e)$ and $v' < v$, then every \msg{StartView} log
+If $\Committed(v', n, e)$ and $v' < v$, then every \msg{StartView} log
 of $v$, every vote from $v$, every recovery state of $v$, every
-\msg{NewState} segment of $v$ that reaches $i$, every \msg{Prepare} of
-$v$ for op $i+1$, every started vote from $v$, and every non-recovering
-replica with $\ell_r = v$ holds $e$ at $i$.
+\msg{NewState} segment of $v$ that reaches $n$, every \msg{Prepare} of
+$v$ for op-number $n$, every started vote from $v$, and every
+non-recovering replica with $\ell_r = v$ holds $e$ at $n$.
 \end{definition}
+
+\begin{remark}
+This is the correctness condition of \citet[\S8.1]{liskov2012vr}, that
+``every committed operation survives into all subsequent views in the
+same position in the serial order'', stated over every fragment of a
+view rather than over the view as a whole.
+\end{remark}
 
 \begin{definition}[The invariant $\Inv$]
 \label{def:inv}
@@ -463,12 +472,12 @@ replica with $\ell_r = v$ holds $e$ at $i$.
   \item \emph{Chosen from a quorum.} A started view's \msg{StartView}
     log extends the best of $Q$ votes from distinct replicas.
   \item \emph{Votes cover acknowledgements.} Every started vote covers
-    every op its sender acknowledged in the vote's view.
+    every op-number its sender acknowledged in the vote's view.
   \item \emph{Primary is longest.} While the primary of $v$ is normal in
     $v$, every fragment of $v$ and every acknowledgement in $v$ is within
     its log.
   \item \emph{Recovery covers acknowledgements.} A recovery response
-    answering a recovering replica covers every op that replica
+    answering a recovering replica covers every op-number that replica
     acknowledged in the response's view.
   \item A replica catching up is not the primary of its view; no
     \msg{Prepare} or \msg{Commit} is addressed to the primary of its
@@ -506,14 +515,14 @@ $\primary(v)$ & $v \bmod N$, the primary of view $v$ \\
 \addlinespace
 $v_r$ & view number of replica $r$ \\
 $\ell_r$ & last normal view: the latest view $r$ was normal in \\
-$L_r$ & log of $r$, a sequence of entries indexed from $0$ \\
-$n_r$ & $|L_r|$, the op number: the op number of $L_r[i]$ is $i+1$ \\
-$k_r$ & commit number: $L_r[0], \dots, L_r[k_r - 1]$ are committed \\
+$L_r$ & log of $r$, a sequence of entries with op-numbers $1, \dots, |L_r|$ \\
+$n_r$ & $|L_r|$, the op-number of the latest entry \\
+$k_r$ & commit number: the entries with op-numbers $1, \dots, k_r$ are committed \\
 $\sigma_r$ & state of $r$'s state machine \\
 $A_r, S_r, V_r, R_r, C_r$ & acknowledgements, view-change senders, votes, recovery responses, client table \\
 \addlinespace
 $e = (c, s, \mathit{op})$ & a log entry: client, request number, operation \\
-$L[i]$, $L[a{:}b]$, $L \cdot e$ & entry at $i$; entries $a, \dots, b-1$; append \\
+$L[n]$, $L(a{..}b]$, $L \cdot e$ & entry with op-number $n$; op-numbers $a+1, \dots, b$; append \\
 $(\ell, L, k)$ & a vote: last normal view, log, commit number \\
 \addlinespace
 $\Sigma$ & a cluster state \\
@@ -522,12 +531,12 @@ $\started$ & every $(v, V)$: view $v$ was started from votes $V$ \\
 $\mathcal{R}$ & the replicas whose status is not recovering \\
 $\Sent(\mathit{to}, m)$ & $(\mathit{to}, m) \in \sent$ \\
 \addlinespace
-$\Frag(v, \mathit{off}, L)$ & the history holds $L$ as view $v$'s log from index $\mathit{off}$ \\
-$\Holds(v, i, e)$ & some fragment of view $v$ has $e$ at index $i$ \\
-$\Acked(v, i, q)$ & replica $q$ acknowledged index $i$ in view $v$ \\
-$\QuorumAcked(v, i)$ & $Q$ distinct replicas acknowledged $i$ in $v$ \\
-$\Committed(v, i, e)$ & $\Holds(v, i, e)$ and $\QuorumAcked(v, i)$ \\
-$\Backed(v, k)$ & every index below $k$ is committed with the entry $v$ holds \\
+$\Frag(v, a, L)$ & the history holds $L$ as view $v$'s entries after op-number $a$ \\
+$\Holds(v, n, e)$ & some fragment of view $v$ has $e$ at op-number $n$ \\
+$\Acked(v, n, q)$ & replica $q$ acknowledged op-number $n$ in view $v$ \\
+$\QuorumAcked(v, n)$ & $Q$ distinct replicas acknowledged $n$ in $v$ \\
+$\Committed(v, n, e)$ & $\Holds(v, n, e)$ and $\QuorumAcked(v, n)$ \\
+$\Backed(v, k)$ & every op-number up to $k$ is committed with the entry $v$ holds \\
 $\Inv$ & the invariant, Definition~\ref{def:inv} \\
 \bottomrule
 \end{tabular}
@@ -593,9 +602,9 @@ The remaining lemmas are one per handler.
 \begin{iface}
   \item[Precondition] $\Inv$; the replica is the normal primary of $v_r$
     and the request is new for its client.
-  \item[Effect] Appends $e$ at index $n_r$, records its own
-    acknowledgement of op $n_r + 1$, and sends
-    $\msg{Prepare}(v_r, n_r+1, e, k_r)$ to the others.
+  \item[Effect] Appends $e$ at op-number $n_r + 1$, records its own
+    acknowledgement of it, and sends $\msg{Prepare}(v_r, n_r+1, e, k_r)$
+    to the others.
   \item[Guarantee] $\Inv$. The new fragment $\Frag(v_r, n_r, [e])$ lies
     beyond every existing fragment of $v_r$.
 \end{iface}
@@ -623,7 +632,7 @@ The remaining lemmas are one per handler.
     commits up to $n$ and replies to the clients of the committed
     entries.
   \item[Guarantee] $\Inv$. If the quorum completed, then
-    $\QuorumAcked(v_r, j)$ holds for every $j < n$, and hence
+    $\QuorumAcked(v_r, m)$ holds for every $m \le n$, and hence
     $\Backed(v_r, n)$.
 \end{iface}
 \end{lemma}
@@ -643,8 +652,8 @@ The remaining lemmas are one per handler.
 \begin{iface}
   \item[Precondition] $\Inv$; the replica is normal in $v = v_r$ and
     $n \le n_r$.
-  \item[Effect] Sends $\msg{NewState}(v, L_r[n{:}], n, n_r, k_r)$ to $i$.
-  \item[Guarantee] $\Inv$. The new fragment $\Frag(v, n, L_r[n{:}])$
+  \item[Effect] Sends $\msg{NewState}(v, L_r(n{..}n_r], n, n_r, k_r)$ to $i$.
+  \item[Guarantee] $\Inv$. The new fragment $\Frag(v, n, L_r(n{..}n_r])$
     agrees with every fragment of $v$.
 \end{iface}
 \end{lemma}
@@ -656,7 +665,7 @@ The remaining lemmas are one per handler.
   \item[Effect] In \transfer{} status, appends the part of $L$ past
     $n_r$, commits up to $k$, becomes normal, and acknowledges its whole
     log. In \viewchange{} status while catching up with $a = k_r$,
-    replaces $L_r[k_r{:}]$ by $L$, commits up to $k$, becomes normal in
+    replaces $L_r(k_r{..}n_r]$ by $L$, commits up to $k$, becomes normal in
     $v_r$, and acknowledges its whole log.
   \item[Guarantee] $\Inv$. Afterwards $\ell_r = v_r$ and $L_r$ agrees
     with every fragment of $v_r$.
@@ -673,7 +682,7 @@ The remaining lemmas are one per handler.
     primary. On a \msg{DoViewChange} as primary, records the vote; on the
     $Q$th, starts the view (Lemma~\ref{lem:h-start}).
   \item[Guarantee] $\Inv$. A vote sent from $r$ is $\Frag(\ell_r, 0,
-    L_r)$ and covers every op $r$ acknowledged in $\ell_r$.
+    L_r)$ and covers every op-number $r$ acknowledged in $\ell_r$.
 \end{iface}
 \end{lemma}
 
@@ -686,7 +695,7 @@ The remaining lemmas are one per handler.
     the best vote; commits up to the greatest $k$ in $V$; becomes normal
     in $v_r$; sends $\msg{StartView}(v_r, L, |L|, k_r)$ to the others.
   \item[Guarantee] $\Inv$. For every $u < v_r$ and every
-    $\Committed(u, i, e)$: $L[i] = e$.
+    $\Committed(u, n, e)$: $L[n] = e$.
 \end{iface}
 \end{lemma}
 
@@ -772,18 +781,18 @@ of steps.
 
 \begin{lemma}[Committed entries are what the view holds]
 \label{lem:committed}
-If $\Inv(\Sigma)$ and $i < k_r$, there are $e$ and $v' \le \ell_r$ with
-$L_r[i] = e$, $\Committed(v', i, e)$, and $\Holds(\ell_r, i, e)$.
+If $\Inv(\Sigma)$ and $n \le k_r$, there are $e$ and $v' \le \ell_r$ with
+$L_r[n] = e$, $\Committed(v', n, e)$, and $\Holds(\ell_r, n, e)$.
 \end{lemma}
 \begin{proof}
-\CommitsBacked gives $e$, $v'$, and $\Holds(\ell_r, i, e)$; \OneLog identifies
-$e$ with $L_r[i]$.
+\CommitsBacked gives $e$, $v'$, and $\Holds(\ell_r, n, e)$; \OneLog identifies
+$e$ with $L_r[n]$.
 \end{proof}
 
 \begin{lemma}[Later views hold earlier commits]
 \label{lem:later}
-If $\Inv(\Sigma)$, $\Committed(v', i, e)$, $v' < v$, and
-$\Holds(v, i, e')$, then $e' = e$.
+If $\Inv(\Sigma)$, $\Committed(v', n, e)$, $v' < v$, and
+$\Holds(v, n, e')$, then $e' = e$.
 \end{lemma}
 \begin{proof}
 Cases on the fragment that holds $e'$, each a clause of \Survival.
@@ -806,7 +815,7 @@ $\ell_q = v$ it holds everything it acknowledged in $v$.
 
 \begin{proof}[Proof of Theorem~\ref{thm:log}]
 Let $\Sigma$ be reachable; $\Inv(\Sigma)$ by
-Theorem~\ref{thm:inductive}. \emph{Prefix agreement:} for $i < k_a, k_b$,
+Theorem~\ref{thm:inductive}. \emph{Prefix agreement:} for $n \le k_a, k_b$,
 Lemma~\ref{lem:committed} gives $e_a$ committed in $v_a$ and $e_b$
 committed in $v_b$; if $v_a < v_b$ then $e_b = e_a$ by
 Lemma~\ref{lem:later}, symmetrically if $v_b < v_a$, and by \OneLog if
@@ -818,8 +827,8 @@ and \OneLog. \emph{Commit bounded:} \Local.
 \end{proof}
 
 \begin{definition}[Applied prefix]
-$\sigma_r$ is the result of applying the operations of $L_r[0{:}k_r]$, in
-order, to the initial state.
+$\sigma_r$ is the result of applying the operations of $L_r(0{..}k_r]$,
+in order, to the initial state.
 \end{definition}
 
 \begin{lemma}[Commit is application]
@@ -843,13 +852,13 @@ No operation is applied to any replica's state machine twice.
 By Theorem~\ref{thm:log} the committed prefix is the same at every
 replica, so the committed log is a single sequence $L$ that only grows.
 By Lemma~\ref{lem:apply} every reply is the output of applying some
-$L[i]$ to the state produced by $L[0{:}i]$, which by \CommitsBacked was
-committed before the reply was sent. A retransmitted request is answered
+$L[n]$ to the state produced by $L(0{..}n-1]$, which by \CommitsBacked
+was committed before the reply was sent. A retransmitted request is answered
 from the client table with the reply of its first execution
 (Lemma~\ref{lem:h-request}), so each request has at most one position in
-$L$. Order the operations by their index in $L$: every reply is
-consistent with that order, and an operation's index is assigned after
-its request was issued and before its reply was sent, so the order
+$L$. Order the operations by their op-number in $L$: every reply is
+consistent with that order, and an operation's op-number is assigned
+after its request was issued and before its reply was sent, so the order
 respects real time.
 \end{proof}
 
@@ -878,13 +887,13 @@ every section uses; Algorithm~\ref{alg:normal} the handlers.
 \EndProcedure
 \Procedure{InstallLog}{$L$}
   \Guard{$|L| \ge k_r$} \why{lem:local}
-  \State $L_r \gets L$; rebuild $C_r$ from $L$, keeping replies for indices below $k_r$
+  \State $L_r \gets L$; rebuild $C_r$ from $L$, keeping replies for op-numbers up to $k_r$
 \EndProcedure
 \Procedure{CommitUpTo}{$k$, $\mathit{reply}$}
   \While{$k_r < k$} \whydep{lem:apply}{app:normal}
+    \State $k_r \gets k_r + 1$
     \State $(\sigma_r, x) \gets \mathrm{apply}(\sigma_r, L_r[k_r].\mathit{op})$;\quad record $x$ in $C_r[L_r[k_r].c]$
     \If{$\mathit{reply}$} reply $(v_r, L_r[k_r].c, L_r[k_r].s, x)$ \EndIf
-    \State $k_r \gets k_r + 1$
   \EndWhile
 \EndProcedure
 \Procedure{EnterNormal}{}
@@ -938,16 +947,16 @@ every section uses; Algorithm~\ref{alg:normal} the handlers.
   \If{$k > n_r$} \Call{StateTransfer}{} \Else\ \Call{CommitUpTo}{$k$, false} \EndIf
 \On{$\msg{GetState}(i, v, n)$} \why{lem:h-getstate}
   \Guard{$\status_r = \normal \wedge v = v_r \wedge n \le n_r$}
-  \Send{$\msg{NewState}(v, L_r[n{:}], n, n_r, k_r)$}{$i$}
+  \Send{$\msg{NewState}(v, L_r(n{..}n_r], n, n_r, k_r)$}{$i$}
 \On{$\msg{NewState}(v, L, a, b, k)$} \why{lem:h-newstate}
   \Guard{$v = v_r \wedge |L| = b - a$}
   \If{$\status_r = \transfer$}
     \If{$a > n_r \vee b \le n_r$} \Return \EndIf
-    \State \Call{Append}{$e$} for each $e$ in $L[n_r - a{:}]$, in order
+    \State \Call{Append}{$e$} for each $e$ in $L(n_r - a{..}b - a]$, in order
     \State \Call{CommitUpTo}{$k$, false};\ $\status_r \gets \normal$
     \Send{$\msg{PrepareOk}(v_r, n_r, \mathrm{id}_r)$}{the primary}
   \ElsIf{$\status_r = \viewchange \wedge \mathit{catching}_r \wedge a = k_r$}
-    \State \Call{InstallLog}{$L_r[{:}a] \cdot L$} \dep{app:transfer}
+    \State \Call{InstallLog}{$L_r(0{..}a] \cdot L$} \dep{app:transfer}
     \State \Call{CommitUpTo}{$k$, false};\ \Call{EnterNormal}{}
     \Send{$\msg{PrepareOk}(v_r, n_r, \mathrm{id}_r)$}{the primary}
   \EndIf
@@ -984,8 +993,9 @@ vote tagged $v$ is the log of a replica last normal in $v$, which by
 \end{proof}
 
 \begin{proof}[Proof of Lemma~\ref{lem:h-request}]
-The new entry is at index $n_r$, and by clause (d) every fragment of
-$v_r$ ends at or before $n_r$, so \OneLog holds for the new fragment.
+The new entry is at op-number $n_r + 1$, and by clause (d) every
+fragment of $v_r$ ends at or before $n_r$, so \OneLog holds for the new
+fragment.
 The \msg{Prepare} carries $k_r$, backed by \CommitsBacked. Clause (d) is
 maintained since the primary's log grew with the fragment.
 \end{proof}
@@ -1001,10 +1011,10 @@ a fragment of $v$.
 
 \begin{proof}[Proof of Lemma~\ref{lem:h-prepareok}]
 By clause (d) every member of $A_r[n]$ other than the primary sent a
-\msg{PrepareOk} for op $n$ in $v_r$, so $|A_r[n]| = Q$ gives
-$\QuorumAcked(v_r, j)$ for all $j < n$. The entries at those indices are
-held by $v_r$ (they are the primary's own fragments), so
-$\Committed(v_r, j, L_r[j])$ and $\Backed(v_r, n)$; \CommitsBacked follows for
+\msg{PrepareOk} for op-number $n$ in $v_r$, so $|A_r[n]| = Q$ gives
+$\QuorumAcked(v_r, m)$ for all $m \le n$. The entries at those op-numbers
+are held by $v_r$ (they are the primary's own fragments), so
+$\Committed(v_r, m, L_r[m])$ and $\Backed(v_r, n)$; \CommitsBacked follows for
 the new $k_r = n$.
 \end{proof}
 
@@ -1021,9 +1031,9 @@ log. Its commit number is backed by \CommitsBacked at the sender.
 \begin{proof}[Proof of Lemma~\ref{lem:h-newstate}]
 In \transfer{} status the replica is normal-adjacent: $\ell_r = v_r = v$
 by \Local, and the appended entries are a fragment of $v$ agreeing with
-its log by \OneLog. While catching up, the kept prefix $L_r[{:}k_r]$ is
+its log by \OneLog. While catching up, the kept prefix $L_r(0{..}k_r]$ is
 backed in $\ell_r < v$ by \CommitsBacked, so by \Survival the fragment of $v$
-holds the same entries at those indices; the installed suffix is the
+holds the same entries at those op-numbers; the installed suffix is the
 fragment itself. Hence the new $L_r$ agrees with every fragment of $v$,
 which is \OneLog for the new $\ell_r = v$, and $\Backed(v, k_r)$ by
 \Survival and the message's $k$.
@@ -1106,7 +1116,7 @@ Algorithm~\ref{alg:idle} the idle step whose timer starts it all.
 \On{idle} \why{lem:h-idle}
   \If{$\status_r = \normal \wedge \mathrm{isPrimary}(r)$}
     \Send{$\msg{Commit}(v_r, k_r)$}{others}
-    \State send $\msg{Prepare}(v_r, n, L_r[n-1], k_r)$ to others for each $n = k_r+1, \dots, n_r$ \dep{app:normal}
+    \State send $\msg{Prepare}(v_r, n, L_r[n], k_r)$ to others for each $n = k_r+1, \dots, n_r$ \dep{app:normal}
   \ElsIf{$\status_r = \normal$}
     \If{the timer fires} \Call{StartViewChange}{$v_r + 1$} \EndIf
   \ElsIf{$\status_r = \recovering$}
@@ -1127,20 +1137,20 @@ Algorithm~\ref{alg:idle} the idle step whose timer starts it all.
 
 \begin{lemma}[The chosen log survives]
 \label{lem:chosen}
-If $\Inv(\Sigma)$, $(v, V) \in \started$, and $\Committed(u, i, e)$ with
-$u < v$, then the best vote of $V$ holds $e$ at $i$.
+If $\Inv(\Sigma)$, $(v, V) \in \started$, and $\Committed(u, n, e)$ with
+$u < v$, then the best vote of $V$ holds $e$ at $n$.
 \end{lemma}
 \begin{proof}
-Strong induction on $v$. The quorum that acknowledged $i$ in $u$ and the
+Strong induction on $v$. The quorum that acknowledged $n$ in $u$ and the
 senders of $V$ share a replica $r$ by Lemma~\ref{lem:quorum}. Let $\ell$ be
 the last normal view in $r$'s vote; $\ell \ge u$ by
-Lemma~\ref{lem:acks}. If $\ell = u$, $r$'s vote holds $e$ at $i$ by
+Lemma~\ref{lem:acks}. If $\ell = u$, $r$'s vote holds $e$ at $n$ by
 clause (c) and \OneLog. If $u < \ell < v$, $r$ adopted the
 \msg{StartView} of $\ell$, which by the induction hypothesis at $\ell$
-holds $e$ at $i$, and $r$'s vote extends it. In either case $r$'s vote
-holds $e$ at $i$; the best vote has a last normal view at least $\ell$
+holds $e$ at $n$, and $r$'s vote extends it. In either case $r$'s vote
+holds $e$ at $n$; the best vote has a last normal view at least $\ell$
 and a log at least as long, and by \Survival at every view between, holds
-$e$ at $i$ too. This is Lemma~\ref{lem:chosen-intro}.
+$e$ at $n$ too. This is Lemma~\ref{lem:chosen-intro}.
 \end{proof}
 
 \begin{proof}[Proof of Lemma~\ref{lem:h-svc}]
@@ -1156,8 +1166,8 @@ clause (d).
 
 \begin{proof}[Proof of Lemma~\ref{lem:h-start}]
 The $Q$ votes are from distinct replicas, so clause (b) holds for the
-new $(v_r, V)$. For $u < v_r$ and $\Committed(u, i, e)$,
-Lemma~\ref{lem:chosen} gives $\mathit{best}.L[i] = e$, which is \Survival
+new $(v_r, V)$. For $u < v_r$ and $\Committed(u, n, e)$,
+Lemma~\ref{lem:chosen} gives $\mathit{best}.L[n] = e$, which is \Survival
 for the new \msg{StartView} and for the primary itself. The installed
 log is the new view's only fragment, so \OneLog. Each $k$ in $V$ is
 backed in its vote's $\ell \le v_r$ by \CommitsBacked, and by \Survival the
@@ -1168,15 +1178,15 @@ chosen log holds the same entries, so $\Backed(v_r, k^*)$.
 The installed log is the fragment of $v$ that the \msg{StartView}
 carries, which gives \OneLog{} for $\ell_r = v$. The message's $k$ is backed in $v$ by \CommitsBacked,
 and the replica's previous $k_r$, backed in the old $\ell_r < v$, is held by $v$
-at the same indices by \Survival, so the new $k_r = \max$ is backed. The
+at the same op-numbers by \Survival, so the new $k_r = \max$ is backed. The
 guard refuses a \msg{StartView} for the current view in normal status,
 which is what Lemma~\ref{lem:acks} needs. The acknowledgement names
 $|L|$, within the primary's log by clause (b).
 \end{proof}
 
 \begin{proof}[Proof of Lemma~\ref{lem:h-idle}]
-The primary's re-sent \msg{Prepare} for op $n$ carries $L_r[n-1]$, a
-fragment of $v_r$ that the history already holds by clause (d) and
+The primary's re-sent \msg{Prepare} for op-number $n$ carries $L_r[n]$,
+a fragment of $v_r$ that the history already holds by clause (d) and
 \OneLog; its \msg{Commit} carries $k_r$, backed by \CommitsBacked. A re-sent
 vote is the case of Lemma~\ref{lem:h-svc}. Starting view $v_r + 1$ is
 the case of Lemma~\ref{lem:h-svc} with $v > v_r$.
@@ -1276,7 +1286,7 @@ normal, view-change, state-transfer, or recovering, a \emph{log} $L_r$ of
 operations, a \emph{commit number} $k_r$ giving the length of the
 committed prefix of the log, and the \emph{last normal view} $\ell_r$,
 the most recent view in which its status was normal (Figure~2 of the
-paper). A \emph{client table} records, per client, the number of its
+paper). Entries are numbered by \emph{op-number} from $1$. A \emph{client table} records, per client, the number of its
 latest request and, once executed, the reply, so that a retransmitted
 request is answered from the table rather than run again.
 
@@ -1382,8 +1392,8 @@ a full primary timeout.
 A replica that receives a \msg{Prepare} past the end of its log, or a
 \msg{Commit} past its log, has missed messages. It sends
 \msg{GetState}$(r, v, |L_r|)$ to the primary and receives
-\msg{NewState}$(v, L, a, b, k)$ with the log from index $a$ to $b$, which
-it appends (\S5.2). A replica that learns of a later view than its own
+\msg{NewState}$(v, L, a, b, k)$ with the entries with op-numbers $a+1$
+to $b$, which it appends (\S5.2). A replica that learns of a later view than its own
 from a normal-case message is in a different situation: the uncommitted
 suffix of its log belongs to a view that has ended and may have been
 superseded. The paper says it should ``set its op-number to its
