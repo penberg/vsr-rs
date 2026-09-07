@@ -320,9 +320,12 @@ $\Sigma \to \Sigma'$ is one of: \emph{deliver} some $(\mathit{to}, m) \in
 $(c, s, \mathit{op})$ at some replica; \emph{recover} some replica with
 the view number it holds in $\Sigma$ and a nonce that no \msg{Recovery}
 in $\sent$ carries. The replica runs the handler of
-Sections~\ref{sec:normal} to~\ref{sec:recovery}; everything it sends,
-replies, and starts is added to $\sent$, $\mathit{replies}$, and
-$\started$, which therefore only grow.
+Sections~\ref{sec:normal} to~\ref{sec:recovery}, subject to one rule
+that precedes every handler: a replica whose status is \recovering{}
+handles only \msg{RecoveryResponse} and the idle step, and drops every
+other message unchanged. Everything the replica sends, replies, and
+starts is added to $\sent$, $\mathit{replies}$, and $\started$, which
+therefore only grow.
 \end{definition}
 
 \begin{definition}[Reachable]
@@ -658,7 +661,10 @@ the handler may assume, always including $\Inv$. \textsc{Effect} is what
 it changes and sends. \textsc{Guarantee} is what holds afterwards:
 $\Inv$ again, plus the fact the step establishes that the rest of the
 proof uses. A handler whose guard fails has no effect and trivially
-preserves $\Inv$.
+preserves $\Inv$. The rule of Definition~\ref{def:step} that a recovering
+replica handles nothing but \msg{RecoveryResponse} is a guard of every
+other handler, and is what makes ``not recovering'' a precondition
+below.
 
 One guarantee is shared by every handler and needs no assumption about
 the message received, so it is stated once.
@@ -764,7 +770,7 @@ The remaining lemmas are one per handler.
 \begin{lemma}[StartViewChange and DoViewChange]
 \label{lem:h-svc}
 \begin{iface}
-  \item[Precondition] $\Inv$; $v \ge v_r$.
+  \item[Precondition] $\Inv$; the replica is not recovering; $v \ge v_r$.
   \item[Effect] If $v > v_r$, adopts $v$ in \viewchange{} status and
     announces it. Records the sender. On $f$ senders, casts its vote
     $(\ell_r, L_r, k_r)$: sends it to $\primary(v_r)$, or records it if
@@ -795,8 +801,8 @@ The remaining lemmas are one per handler.
 \begin{lemma}[StartView]
 \label{lem:h-startview}
 \begin{iface}
-  \item[Precondition] $\Inv$; $v > v_r$, or $v = v_r$ in \viewchange{}
-    status.
+  \item[Precondition] $\Inv$; the replica is not recovering; $v > v_r$,
+    or $v = v_r$ in \viewchange{} status.
   \item[Effect] Adopts $v$; installs $L$; commits up to $k$; becomes
     normal in $v$; acknowledges its whole log.
   \item[Guarantee] $\Inv$. Afterwards $\ell_r = v$ and $L_r = L$. The
@@ -808,7 +814,8 @@ The remaining lemmas are one per handler.
 \begin{lemma}[Recovery and RecoveryResponse]
 \label{lem:h-recovery}
 \begin{iface}
-  \item[Precondition] $\Inv$.
+  \item[Precondition] $\Inv$; a \msg{Recovery} is handled only by a
+    replica that is not recovering.
   \item[Effect] On \msg{Recovery} carrying $v > v_r$, adopts $v$. On
     \msg{Recovery} in normal status, answers with $v_r$ and, if primary,
     with $(L_r, k_r)$. On the $Q$th \msg{RecoveryResponse} for its nonce,
@@ -989,9 +996,13 @@ Algorithm~\ref{alg:normal} the handlers.
 \end{algorithm}
 
 \begin{algorithm}[tp]
-\caption{Normal operation and state transfer.}
+\caption{Normal operation and state transfer. The first rule applies to
+every handler of Algorithms~\ref{alg:normal}, \ref{alg:viewchange},
+and~\ref{alg:recovery}.}
 \label{alg:normal}
 \begin{algorithmic}[1]
+\On{any message other than $\msg{RecoveryResponse}$} \Comment{Definition~\ref{def:step}}
+  \Guard{$\status_r \ne \recovering$}
 \On{$\msg{Request}(c, s, \mathit{op})$} \why{lem:h-request}
   \Guard{$\mathrm{isPrimary}(r) \wedge \status_r = \normal$}
   \If{$C_r[c]$ undefined or $s > C_r[c].s$}
@@ -1317,7 +1328,8 @@ $v_r + 1$ is the case of Lemma~\ref{lem:h-svc} with $v > v_r$.
 A replica that comes back with nothing but its persisted view number
 asks everyone what it missed. It waits for $Q$ answers to its nonce, one
 of them from the primary of the latest view among them, and adopts that
-primary's log. Until then it does nothing else. Its \msg{Recovery}
+primary's log. Until then it handles nothing else, by the first rule of
+Algorithm~\ref{alg:normal}. Its \msg{Recovery}
 carries the persisted view, so replicas behind it move forward first.
 Algorithm~\ref{alg:recovery} gives the handlers.
 
@@ -1390,12 +1402,11 @@ development and drafted the text, the pseudocode of
 Sections~\ref{sec:normal} to~\ref{sec:recovery}, and the proof sketches;
 the agent also took part in writing the Lean development. What has been
 checked: the Lean proof, by the Lean kernel, with the axioms stated in
-Appendix~\ref{app:lean}. What has not: no human has yet checked the Lean
-development against the paper's definitions and pseudocode, or the hand
-proofs against the Lean, line by line. The correspondence in
-Appendix~\ref{app:lean} is the agent's, and a simulated peer review has
-already found one place where the pseudocode and the model differ. The
-author takes responsibility for the whole.
+Appendix~\ref{app:lean}. What has not: no human has yet checked, line by line, that the
+pseudocode and definitions printed in this paper are the model the Lean
+proves, or that the hand proofs follow the Lean. The correspondence in
+Appendix~\ref{app:lean} is the agent's. The author takes responsibility
+for the whole.
 
 \bibliography{references}
 

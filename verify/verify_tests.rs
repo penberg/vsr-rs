@@ -7,8 +7,14 @@ use std::process::Command;
 use std::sync::Once;
 use vsr_verify::{generate, Cluster};
 
+/// Defaults for `cargo test`; `VSR_VERIFY_SEEDS` and `VSR_VERIFY_STEPS`
+/// override them for a longer sweep.
 const SEEDS: u64 = 40;
 const STEPS: usize = 200;
+
+fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
 
 fn lean_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../lean")
@@ -94,8 +100,10 @@ fn replica_matches_lean_model() {
     build_model(&lake);
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("conformance");
     std::fs::create_dir_all(&dir).unwrap();
-    for seed in 0..SEEDS {
-        let trace = generate(seed, STEPS);
+    let seeds: u64 = env_or("VSR_VERIFY_SEEDS", SEEDS);
+    let steps: usize = env_or("VSR_VERIFY_STEPS", STEPS);
+    for seed in 0..seeds {
+        let trace = generate(seed, steps);
         let trace_path = dir.join(format!("trace-{seed}.txt"));
         std::fs::write(&trace_path, trace.to_string()).unwrap();
         let rust = Cluster::observe(&trace);
