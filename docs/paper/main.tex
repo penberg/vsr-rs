@@ -55,6 +55,7 @@
 
 % === Macros for the protocol ===
 \newcommand{\msg}[1]{\textsc{#1}}
+\newcommand{\dvc}{\msg{DoViewChange}}
 \newcommand{\Inv}{\mathcal{I}}
 \newcommand{\Frag}{\mathrm{Frag}}
 \newcommand{\Holds}{\mathrm{Holds}}
@@ -173,8 +174,8 @@ In every reachable cluster state:
 
 Durability says that every quorum the non-recovering replicas could form
 contains a replica holding the committed entry; with nobody recovering
-the bound is a majority. A recovering replica holds nothing and votes
-for nothing, so it counts on neither side.
+the bound is a majority. A recovering replica holds nothing and sends
+no \dvc{}, so it counts on neither side.
 
 The proof in the body of this paper is a hand proof at the level of
 detail of an algorithms paper. Every definition, lemma, and theorem in it
@@ -216,29 +217,30 @@ replica or in a message, has a quorum of acknowledgements behind every
 op-number up to it. \Survival: whatever was committed in a view is held,
 at the same op-number, by every later view. Around these are the clauses
 the induction turned out to need, most of them about the order in which
-things happened: a vote is cast after the acknowledgements its sender
-made, a view is started at most once, a primary's log in its view never
+things happened: a \dvc{} is sent after the acknowledgements its
+sender made, a view is started at most once, a primary's log in its view never
 shrinks. The lemma that carries the induction is the following.
 
 \begin{lemma}[The chosen log holds earlier commits]
 \label{lem:chosen-intro}
 Suppose entry $e$ was acknowledged at op-number $n$ in view $v$ by a
-quorum, and view $u > v$ was started from a quorum of votes $V$, and
-every vote in $V$ from a view strictly between $v$ and $u$ holds $e$ at
-$n$. Then the vote of $V$ from which $u$'s log was chosen holds $e$ at
-$n$.
+quorum, and view $u > v$ was started from a quorum $V$ of \dvc{}
+messages, and every \dvc{} in $V$ from a view strictly between $v$ and
+$u$ holds $e$ at $n$. Then the \dvc{} of $V$ from which $u$'s log was
+chosen holds $e$ at $n$.
 \end{lemma}
 
-The two quorums intersect in a replica $x$. The vote $x$ cast for $u$
-was cast after $x$ acknowledged $n$ in $v$, so it is from a view at least
-$v$; if from $v$ itself, it covers the acknowledgement; if from a later
-view, the hypothesis applies. The best vote is at least as good as
-$x$'s, by the ordering the new primary uses, and holds $e$ too. A strong
+The two quorums intersect in a replica $x$. The \dvc{} $x$ sent for
+$u$ was sent after $x$ acknowledged $n$ in $v$, so it is from a view at
+least $v$; if from $v$ itself, it covers the acknowledgement; if from a
+later view, the hypothesis applies. The \dvc{} the new primary chooses
+is at least as good as $x$'s, by the ordering it uses, and holds $e$
+too. A strong
 induction on $u$ discharges the hypothesis. Each of the three safety
 corrections in Appendix~\ref{app:vr} is what makes one step of this
 argument go through: without a persisted view number a replica's view
-can go backwards; without the ban on truncation a vote need not cover
-what its sender acknowledged; without monotone commits \CommitsBacked{}
+can go backwards; without the ban on truncation a \dvc{} need not
+cover what its sender acknowledged; without monotone commits \CommitsBacked{}
 fails at the replica that adopted a lower number.
 
 \subsection{Organisation}
@@ -282,8 +284,9 @@ $\status_r$ was \normal; a log $L_r$ with $n_r = |L_r|$; a commit number
 $k_r$; a flag $\mathit{catching}_r$; a client table $C_r$ mapping client
 identities to a request number and an optional reply; acknowledgements
 $A_r$ mapping op-numbers to sets of identities; a set $S_r$ of
-identities; a flag $\mathit{voted}_r$; votes $V_r$ mapping identities to
-votes; a nonce $x_r$; recovery responses $R_r$ mapping identities to
+identities; a flag $\mathit{dvcSent}_r$; the \dvc{} messages $V_r$
+received as new primary, mapping identities to their bodies; a nonce
+$x_r$; recovery responses $R_r$ mapping identities to
 responses; and a state machine state $\sigma_r$.
 $\mathrm{isPrimary}(r)$ means $\mathrm{id}_r = \primary(v_r)$.
 \end{definition}
@@ -304,7 +307,7 @@ $\msg{GetState}(i, v, n)$ & $\msg{RecoveryResponse}(v, x, i, \mathit{st})$ \\
 $\msg{NewState}(v, L, a, b, k)$ &
 \end{tabular}
 \end{center}
-A \emph{vote} is the triple $(\ell, L, k)$ a \msg{DoViewChange} carries:
+The \emph{body} of a \dvc{} is the triple $(\ell, L, k)$ it carries:
 the sender's last normal view, its log, its commit number.
 \end{definition}
 
@@ -314,8 +317,8 @@ A cluster state is $\Sigma = (\mathit{replicas}, \sent, \mathit{replies},
 \started)$: the replicas by identity; $\sent$, the set of every
 $(\mathit{to}, m)$ ever sent; $\mathit{replies}$, every reply
 $(v, c, s, x)$ ever produced; and $\started$, the set of $(v, V)$ for
-every view $v$ some primary started and the votes $V$ it chose the log
-from. $\Sent(\mathit{to}, m)$ means $(\mathit{to}, m) \in \sent$.
+every view $v$ some primary started and the \dvc{} messages $V$ it
+chose the log from. $\Sent(\mathit{to}, m)$ means $(\mathit{to}, m) \in \sent$.
 $\mathcal{R}$ is the set of replicas with $\status \ne \recovering$.
 \end{definition}
 
@@ -389,12 +392,12 @@ replica that is never chosen to run is a crashed one.
 The invariant is stated over the history. The following definitions name
 the pieces of a view's log that the history holds.
 
-\begin{definition}[Vote of]
-\label{def:voteof}
-$\mathrm{Vote}(u, x, d)$: replica $x$ cast the vote $d = (\ell, L, k)$
-for view $u$. Either the history holds
-$\msg{DoViewChange}(u, x, \ell, L, |L|, k)$, or $(u, V) \in \started$
-with $(x, d) \in V$. The second case covers the new primary's own vote,
+\begin{definition}[DoViewChange of]
+\label{def:dvcof}
+$\mathrm{Dvc}(u, x, d)$: replica $x$ sent a \dvc{} with body
+$d = (\ell, L, k)$ for view $u$. Either the history holds
+$\dvc(u, x, \ell, L, |L|, k)$, or $(u, V) \in \started$ with
+$(x, d) \in V$. The second case covers the new primary's own \dvc{},
 which it records without sending.
 \end{definition}
 
@@ -409,14 +412,14 @@ message that carries log:
 \Sent(\_, \msg{NewState}(v, L, a, \_, \_)) & \Rightarrow \Frag(v, a, L) \\
 \Sent(\_, \msg{StartView}(v, L, \_, \_)) & \Rightarrow \Frag(v, 0, L) \\
 \Sent(\_, \msg{RecoveryResponse}(v, \_, \_, (L, \_))) & \Rightarrow \Frag(v, 0, L) \\
-\mathrm{Vote}(\_, \_, (\ell, L, \_)) & \Rightarrow \Frag(\ell, 0, L)
+\mathrm{Dvc}(\_, \_, (\ell, L, \_)) & \Rightarrow \Frag(\ell, 0, L)
 \end{array}
 \]
 \end{definition}
 
 \begin{remark}
-A vote is a fragment of the view its sender was \emph{last normal in},
-$\ell$, not of the view it votes for. A replica catching up with a view
+A \dvc{} is a fragment of the view its sender was \emph{last normal
+in}, $\ell$, not of the view it is for. A replica catching up with a view
 has a view number ahead of its log; tagging by $\ell$ is what keeps it
 consistent with the rest.
 \end{remark}
@@ -449,7 +452,7 @@ $\Backed(v, k)$: for every op-number $n \le k$,
 
 \begin{lemma}[The history is monotone]
 \label{lem:mono}
-$\mathrm{Vote}$, $\Frag$, $\Holds$, $\Acked$, $\Committed$, and $\Backed$
+$\mathrm{Dvc}$, $\Frag$, $\Holds$, $\Acked$, $\Committed$, and $\Backed$
 are preserved by every step.
 \end{lemma}
 \begin{proof}
@@ -502,13 +505,13 @@ thing.
 
 \begin{definition}[\CommitsBacked]
 $\Backed(\ell_r, k_r)$ for every replica; and for every message in
-$\sent$ carrying a commit number $k$ in view $v$, $\Backed(v, k)$, a vote
-being judged by its last normal view.
+$\sent$ carrying a commit number $k$ in view $v$, $\Backed(v, k)$, a
+\dvc{} being judged by its last normal view.
 \end{definition}
 
 \begin{definition}[\Survival]
 If $\Committed(v', n, e)$ and $v' < v$, then every \msg{StartView} log
-of $v$, every vote from $v$, every recovery state of $v$, every
+of $v$, every \dvc{} from $v$, every recovery state of $v$, every
 \msg{NewState} segment of $v$ that reaches $n$, every \msg{Prepare} of
 $v$ for op-number $n$, and every non-recovering replica with
 $\ell_r = v$ holds $e$ at $n$.
@@ -527,21 +530,22 @@ view rather than over the view as a whole.
 with the following clauses. Appendix~\ref{app:lean} lists each by its
 name in the mechanised proof.
 \begin{enumerate}[nosep,label=(\alph*)]
-  \item \emph{Views only rise.} No message in $\sent$, and no vote,
-    carries a view above its sender's current view. A replica in
-    \viewchange{} status has $\ell_r < v_r$; a vote for $u$ is from a
+  \item \emph{Views only rise.} No message in $\sent$, and no recorded
+    \dvc{}, carries a view above its sender's current view. A replica in
+    \viewchange{} status has $\ell_r < v_r$; a \dvc{} for $u$ is from a
     view $\ell < u$; the primary of a started view $v$ has $\ell \ge v$.
   \item \emph{Chosen from a quorum, once.} A view is started at most
     once. A started view's \msg{StartView} log extends the best of the
-    $Q$ votes, from distinct replicas, it was started from. Every whole
-    log of a started view, and every \msg{NewState} of it, reaches at
-    least as far as that best vote's log.
-  \item \emph{Votes cover acknowledgements.} A vote from $x$ covers
-    every op-number $x$ acknowledged in the vote's view $\ell$; if $x$ is
+    $Q$ \dvc{} messages, from distinct replicas, it was started from.
+    Every whole log of a started view, and every \msg{NewState} of it,
+    reaches at least as far as that best \dvc{}'s log.
+  \item \emph{DoViewChanges cover acknowledgements.} A \dvc{} from $x$
+    covers every op-number $x$ acknowledged in its view $\ell$; if $x$ is
     the primary of $\ell$, it covers every fragment of $\ell$.
-  \item \emph{Votes come after acknowledgements.} If $x$ acknowledged in
-    view $v$, or is the primary of a started view $v$, and cast a vote
-    for $u > v$, that vote is from a view $\ell \ge v$.
+  \item \emph{DoViewChanges come after acknowledgements.} If $x$
+    acknowledged in view $v$, or is the primary of a started view $v$,
+    and sent a \dvc{} for $u > v$, that \dvc{} is from a view
+    $\ell \ge v$.
   \item \emph{Primary is longest.} While $v$ is the last normal view of
     $\primary(v)$ and it is not recovering, every fragment of $v$, every
     log of a replica last normal in $v$, and every acknowledgement in
@@ -600,18 +604,18 @@ $L_r$ & log of $r$, a sequence of entries with op-numbers $1, \dots, |L_r|$ \\
 $n_r$ & $|L_r|$, the op-number of the latest entry \\
 $k_r$ & commit number: the entries with op-numbers $1, \dots, k_r$ are committed \\
 $\sigma_r$ & state of $r$'s state machine \\
-$A_r, S_r, V_r, R_r, C_r$ & acknowledgements, view-change senders, votes, recovery responses, client table \\
+$A_r, S_r, V_r, R_r, C_r$ & the maps and sets of Definition~\ref{def:replica} \\
 \addlinespace
 $e = (c, s, \mathit{op})$ & a log entry: client, request number, operation \\
 $L[n]$, $L(a{..}b]$, $L \cdot e$ & entry with op-number $n$; op-numbers $a+1, \dots, b$; append \\
-$(\ell, L, k)$ & a vote: last normal view, log, commit number \\
+$(\ell, L, k)$ & a \dvc{} body: last normal view, log, commit number \\
 \addlinespace
 $\Sigma$ & a cluster state \\
 $\sent$ & every $(\mathit{to}, m)$ ever sent; never shrinks \\
-$\started$ & every $(v, V)$: view $v$ was started from votes $V$ \\
+$\started$ & every $(v, V)$: view $v$ was started from the \dvc{}s $V$ \\
 $\mathcal{R}$ & the replicas whose status is not recovering \\
 $\Sent(\mathit{to}, m)$ & $(\mathit{to}, m) \in \sent$ \\
-$\mathrm{Vote}(u, x, d)$ & $x$ cast vote $d$ for view $u$, sent or recorded \\
+$\mathrm{Dvc}(u, x, d)$ & $x$'s \dvc{} for view $u$ has body $d$, sent or recorded \\
 \addlinespace
 $\Frag(v, a, L)$ & the history holds $L$ as view $v$'s entries after op-number $a$ \\
 $\Holds(v, n, e)$ & some fragment of view $v$ has $e$ at op-number $n$ \\
@@ -778,11 +782,11 @@ The remaining lemmas are one per handler.
 \begin{iface}
   \item[Precondition] $\Inv$; the replica is not recovering; $v \ge v_r$.
   \item[Effect] If $v > v_r$, adopts $v$ in \viewchange{} status and
-    announces it. Records the sender. On $f$ senders, casts its vote
-    $(\ell_r, L_r, k_r)$: sends it to $\primary(v_r)$, or records it if
-    it is the primary. On a \msg{DoViewChange} as primary, records the
-    vote; on the $Q$th, starts the view (Lemma~\ref{lem:h-start}).
-  \item[Guarantee] $\Inv$. A vote cast by $r$ satisfies clauses (a), (c),
+    announces it. Records the sender. On $f$ senders, sends its \dvc{}
+    with body $(\ell_r, L_r, k_r)$ to $\primary(v_r)$, or records it if
+    it is the primary. On a \dvc{} as primary, records it; on the $Q$th,
+    starts the view (Lemma~\ref{lem:h-start}).
+  \item[Guarantee] $\Inv$. A \dvc{} sent by $r$ satisfies clauses (a), (c),
     and (d) of Definition~\ref{def:inv}: it is from $\ell_r < v_r$, it
     covers every op-number $r$ acknowledged in $\ell_r$, and it comes
     after every acknowledgement $r$ made.
@@ -793,10 +797,11 @@ The remaining lemmas are one per handler.
 \label{lem:h-start}
 \begin{iface}
   \item[Precondition] $\Inv$; the replica is $\primary(v_r)$ in
-    \viewchange{} status and holds $Q$ votes $V$ from distinct replicas,
+    \viewchange{} status and holds $Q$ \dvc{} messages $V$ from distinct
+    replicas,
     each sent to it for $v_r$ or its own.
   \item[Effect] Adds $(v_r, V)$ to $\started$; installs the log $L$ of
-    the best vote; commits up to the greatest $k$ in $V$; becomes normal
+    the best \dvc{}; commits up to the greatest $k$ in $V$; becomes normal
     in $v_r$; sends $\msg{StartView}(v_r, L, |L|, k_r)$ to the others.
   \item[Guarantee] $\Inv$. For every $u < v_r$ and every
     $\Committed(u, n, e)$: $L[n] = e$. The guards of
@@ -854,7 +859,8 @@ The remaining lemmas are one per handler.
   \item[Effect] Re-sends: the primary its \msg{Commit} and every
     uncommitted \msg{Prepare}; a recovering replica its \msg{Recovery};
     a replica in transfer its \msg{GetState}; a replica in view change
-    its \msg{StartViewChange} and, if it has voted, its vote. A backup or
+    its \msg{StartViewChange} and, if it has sent one, its \dvc{}. A
+    backup or
     a replica in view change whose timer fires starts view $v_r + 1$.
   \item[Guarantee] $\Inv$. Every fragment re-sent is one the history
     already holds.
@@ -980,7 +986,7 @@ Algorithm~\ref{alg:normal} the handlers.
   \EndWhile
 \EndProcedure
 \Procedure{EnterNormal}{}
-  \State $\status_r \gets \normal$;\ $\ell_r \gets v_r$;\ $S_r, V_r \gets \emptyset$;\ $\mathit{voted}_r, \mathit{catching}_r \gets \mathrm{false}$
+  \State $\status_r \gets \normal$;\ $\ell_r \gets v_r$;\ $S_r, V_r \gets \emptyset$;\ $\mathit{dvcSent}_r, \mathit{catching}_r \gets \mathrm{false}$
 \EndProcedure
 \Procedure{StateTransfer}{}
   \State $\status_r \gets \transfer$
@@ -988,7 +994,7 @@ Algorithm~\ref{alg:normal} the handlers.
 \EndProcedure
 \Procedure{CatchUp}{$v$}
   \If{$v = v_r \wedge \mathit{catching}_r$} \Return \EndIf
-  \State $v_r \gets v$;\ $\status_r \gets \viewchange$;\ $\mathit{catching}_r \gets \mathrm{true}$;\ $S_r, V_r \gets \emptyset$;\ $\mathit{voted}_r \gets \mathrm{false}$
+  \State $v_r \gets v$;\ $\status_r \gets \viewchange$;\ $\mathit{catching}_r \gets \mathrm{true}$;\ $S_r, V_r \gets \emptyset$;\ $\mathit{dvcSent}_r \gets \mathrm{false}$
   \Send{$\msg{GetState}(\mathrm{id}_r, v, k_r)$}{$\primary(v)$} \dep{app:transfer}
 \EndProcedure
 \Procedure{Accept}{$v$} \Comment{may this normal-case message be processed?}
@@ -1076,7 +1082,7 @@ normal, $p$ changes its log only in \Call{Append}{} on a \msg{Request};
 which is clause (e). (iii): a \msg{Prepare} or \msg{NewState} of $v$ is
 sent by $p$ from its own log, or by a backup from a log that \OneLog{}
 says agrees with $p$'s; a \msg{StartView} of $v$ is $p$'s log when it
-started $v$; a vote from $v$ is the log of a replica last normal in $v$,
+started $v$; a \dvc{} from $v$ is the log of a replica last normal in $v$,
 which by \OneLog{} agrees with $p$'s.
 \end{proof}
 
@@ -1091,11 +1097,11 @@ non-recovering replica last normal in such a $u$, holds $L_r[m]$ at $m$.
 \end{lemma}
 \begin{proof}
 Strong induction on $u$ over the started views above $v$. Let $u$ be
-started from $V$; by the induction hypothesis every vote in $V$ from a
-view strictly between $v$ and $u$ holds $L_r[m]$ at $m$, since such a
-vote is a fragment of that view. Lemma~\ref{lem:chosen} then gives that
-the best vote of $V$ holds $L_r[m]$ at $m$. By clause (b) the
-\msg{StartView} of $u$ extends the best vote, so it holds $L_r[m]$ at
+started from $V$; by the induction hypothesis every \dvc{} in $V$ from
+a view strictly between $v$ and $u$ holds $L_r[m]$ at $m$, since such a
+\dvc{} is a fragment of that view. Lemma~\ref{lem:chosen} then gives
+that the best \dvc{} of $V$ holds $L_r[m]$ at $m$. By clause (b) the
+\msg{StartView} of $u$ extends the best \dvc{}, so it holds $L_r[m]$ at
 $m$; every other fragment of $u$ and every replica last normal in $u$
 reaches $m$ by clause (b) and agrees with the \msg{StartView} by
 \OneLog.
@@ -1161,9 +1167,10 @@ Lemma~\ref{lem:h-prepare}.
 \subsection{Overview}
 
 A replica that stops hearing from the primary moves to the next view and
-says so. A replica that hears $f$ others say so votes: it sends the new
-primary its log tagged with the view the log came from. The new primary
-takes the log from the vote with the latest such view, longest on a tie,
+says so. A replica that hears $f$ others say so sends the new primary a
+\dvc{}: its log, tagged with the view the log came from. The new primary
+takes the log from the \dvc{} with the latest such view, longest on a
+tie,
 which by Lemma~\ref{lem:chosen} holds everything any earlier view
 committed, and announces it with \msg{StartView}.
 Algorithm~\ref{alg:vchelpers} gives the helpers,
@@ -1175,24 +1182,24 @@ the idle step whose timer starts it all.
 \label{alg:vchelpers}
 \begin{algorithmic}[1]
 \Procedure{StartViewChange}{$v$}
-  \State $v_r \gets v$;\ $\status_r \gets \viewchange$;\ $\mathit{catching}_r \gets \mathrm{false}$;\ $S_r, V_r \gets \emptyset$;\ $\mathit{voted}_r \gets \mathrm{false}$
+  \State $v_r \gets v$;\ $\status_r \gets \viewchange$;\ $\mathit{catching}_r \gets \mathrm{false}$;\ $S_r, V_r \gets \emptyset$;\ $\mathit{dvcSent}_r \gets \mathrm{false}$
   \Send{$\msg{StartViewChange}(v, \mathrm{id}_r)$}{others}
-  \State \Call{MaybeVote}{}
+  \State \Call{MaybeSendDoViewChange}{}
 \EndProcedure
-\Procedure{MaybeVote}{}
-  \If{$\status_r = \viewchange \wedge \lnot\mathit{catching}_r \wedge \lnot\mathit{voted}_r \wedge |S_r| \ge f$}
-    \State $\mathit{voted}_r \gets \mathrm{true}$;\ \Call{Vote}{}
+\Procedure{MaybeSendDoViewChange}{}
+  \If{$\status_r = \viewchange \wedge \lnot\mathit{catching}_r \wedge \lnot\mathit{dvcSent}_r \wedge |S_r| \ge f$}
+    \State $\mathit{dvcSent}_r \gets \mathrm{true}$;\ \Call{SendDoViewChange}{}
   \EndIf
 \EndProcedure
-\Procedure{Vote}{} \why{lem:h-svc}
-  \If{$\primary(v_r) = \mathrm{id}_r$} \Call{RecordVote}{$\mathrm{id}_r$, $(\ell_r, L_r, k_r)$}
+\Procedure{SendDoViewChange}{} \why{lem:h-svc}
+  \If{$\primary(v_r) = \mathrm{id}_r$} \Call{RecordDoViewChange}{$\mathrm{id}_r$, $(\ell_r, L_r, k_r)$}
   \Else\ send $\msg{DoViewChange}(v_r, \mathrm{id}_r, \ell_r, L_r, n_r, k_r)$ to the primary
   \EndIf
 \EndProcedure
-\Procedure{RecordVote}{$i$, $\mathit{vote}$} \why{lem:h-start}
-  \State $V_r[i] \gets \mathit{vote}$
+\Procedure{RecordDoViewChange}{$i$, $d$} \why{lem:h-start}
+  \State $V_r[i] \gets d$
   \If{$|V_r| < Q$} \Return \EndIf
-  \State $\mathit{best} \gets$ the vote in $V_r$ with the greatest $(\ell, |L|)$ lexicographically, ties to the highest identity \why{lem:chosen}
+  \State $\mathit{best} \gets$ the body in $V_r$ with the greatest $(\ell, |L|)$ lexicographically, ties to the highest identity \why{lem:chosen}
   \State $k^* \gets \max\{\, k : (\ell, L, k) \in V_r \,\}$
   \State start $v_r$ from $V_r$ \Comment{adds $(v_r, V_r)$ to $\started$}
   \State \Call{InstallLog}{$\mathit{best}.L$};\ \Call{CommitUpTo}{$k^*$, true};\ \Call{EnterNormal}{}
@@ -1209,14 +1216,14 @@ the idle step whose timer starts it all.
 \On{$\msg{StartViewChange}(v, i)$} \why{lem:h-svc}
   \If{$v < v_r$} \Return \EndIf
   \If{$v > v_r$} \Call{StartViewChange}{$v$} \dep{app:viewchange} \EndIf
-  \If{$\status_r = \viewchange$} $S_r \gets S_r \cup \{i\}$;\ \Call{MaybeVote}{}
+  \If{$\status_r = \viewchange$} $S_r \gets S_r \cup \{i\}$;\ \Call{MaybeSendDoViewChange}{}
   \ElsIf{$\status_r = \normal \wedge \mathrm{isPrimary}(r)$} send $\msg{StartView}(v_r, L_r, n_r, k_r)$ to $i$
   \EndIf
 \On{$\msg{DoViewChange}(v, i, \ell, L, n, k)$} \why{lem:h-svc}
   \Guard{$v \ge v_r \wedge \primary(v) = \mathrm{id}_r \wedge |L| = n$}
   \If{$v > v_r$} \Call{StartViewChange}{$v$} \EndIf
   \If{$\status_r = \normal$} send $\msg{StartView}(v_r, L_r, n_r, k_r)$ to $i$
-  \Else\ \Call{RecordVote}{$i$, $(\ell, L, k)$}
+  \Else\ \Call{RecordDoViewChange}{$i$, $(\ell, L, k)$}
   \EndIf
 \On{$\msg{StartView}(v, L, n, k)$} \why{lem:h-startview}
   \Guard{$|L| = n \wedge (v > v_r \vee (v = v_r \wedge \status_r = \viewchange))$} \dep{app:viewchange}
@@ -1246,7 +1253,7 @@ counters, which the environment's schedule drives
   \ElsIf{$\mathit{catching}_r$}
     \Send{$\msg{GetState}(\mathrm{id}_r, v_r, k_r)$}{the primary}
   \Else
-    \Send{$\msg{StartViewChange}(v_r, \mathrm{id}_r)$}{others};\ \textbf{if} $\mathit{voted}_r$ \textbf{then} \Call{Vote}{}
+    \Send{$\msg{StartViewChange}(v_r, \mathrm{id}_r)$}{others};\ \textbf{if} $\mathit{dvcSent}_r$ \textbf{then} \Call{SendDoViewChange}{}
   \EndIf
 \end{algorithmic}
 \end{algorithm}
@@ -1257,29 +1264,29 @@ counters, which the environment's schedule drives
 \label{lem:chosen}
 Let $\Inv(\Sigma)$. Suppose $\Holds(v, n, e)$ and a set $X$ of $Q$
 distinct identities below $N$ with $\Acked(v, n, x)$ for every $x \in X$.
-Let $u > v$, and let $V$ be $Q$ votes for $u$ from distinct replicas,
-each satisfying clauses (c) and (d), such that every vote in $V$ from a
-view $\ell$ with $v < \ell < u$ holds $e$ at $n$. Then the best vote of
-$V$, by $(\ell, |L|)$, holds $e$ at $n$.
+Let $u > v$, and let $V$ be $Q$ \dvc{} messages for $u$ from distinct
+replicas, each satisfying clauses (c) and (d), such that every \dvc{}
+in $V$ from a view $\ell$ with $v < \ell < u$ holds $e$ at $n$. Then the
+best \dvc{} of $V$, by $(\ell, |L|)$, holds $e$ at $n$.
 \end{lemma}
 \begin{proof}
-By Lemma~\ref{lem:quorum} some $x \in X$ cast a vote $d = (\ell, L, k)$
-in $V$. By clause (d), $\ell \ge v$: $x$ either sent a \msg{PrepareOk} in
+By Lemma~\ref{lem:quorum} some $x \in X$ sent a \dvc{} with body
+$d = (\ell, L, k)$ in $V$. By clause (d), $\ell \ge v$: $x$ either sent a \msg{PrepareOk} in
 $v$ before voting, or is the primary of $v$, which was started since it
-holds a fragment. If $\ell = v$: by clause (c) the vote covers $n$, as
+holds a fragment. If $\ell = v$: by clause (c) the \dvc{} covers $n$, as
 an op-number $x$ acknowledged in $v$ or, for the primary, as a fragment
 of $v$; and \OneLog(i) gives $L[n] = e$. If $\ell > v$: the hypothesis
 gives $L[n] = e$, since $\ell < u$ by clause (a). So $d$ holds $e$ at
-$n$. Let $b = (\ell_b, L_b, k_b)$ be the best vote, so
+$n$. Let $b = (\ell_b, L_b, k_b)$ be the best \dvc{}, so
 $(\ell_b, |L_b|) \ge (\ell, |L|)$. If $\ell_b = \ell$ then
 $|L_b| \ge |L| \ge n$ and $L_b[n] = e$ by \OneLog(i), both being
-fragments of $\ell$. If $\ell_b > \ell \ge v$ then $b$ is a vote from a
+fragments of $\ell$. If $\ell_b > \ell \ge v$ then $b$ is a \dvc{} from a
 view strictly between $v$ and $u$, and the hypothesis gives
 $L_b[n] = e$.
 \end{proof}
 
 \begin{proof}[Proof of Lemma~\ref{lem:h-svc}]
-Adopting a larger view preserves clause (a). A vote is
+Adopting a larger view preserves clause (a). A \dvc{} carries
 $(\ell_r, L_r, k_r)$ with $\ell_r$ the view $L_r$ came from, so it is
 $\Frag(\ell_r, 0, L_r)$, agreeing with $\ell_r$'s other fragments by
 \OneLog; its $k_r$ is backed in $\ell_r$ by \CommitsBacked; it is from
@@ -1293,14 +1300,14 @@ fragment of $v_r$ by clause (e).
 \end{proof}
 
 \begin{proof}[Proof of Lemma~\ref{lem:h-start}]
-The $Q$ votes are from distinct replicas and $v_r$ was not started
+The $Q$ \dvc{} messages are from distinct replicas and $v_r$ was not started
 before, as its primary was not normal in it, so clause (b) holds for the
-new $(v_r, V)$. For $u < v_r$ and $\Committed(u, n, e)$, every vote in
+new $(v_r, V)$. For $u < v_r$ and $\Committed(u, n, e)$, every \dvc{} in
 $V$ from a view between $u$ and $v_r$ holds $e$ at $n$ by \Survival, so
 Lemma~\ref{lem:chosen} gives $\mathit{best}.L[n] = e$, which is
 \Survival{} for the new \msg{StartView} and for the primary itself. The
 installed log is the new view's only fragment, so \OneLog. Each $k$ in
-$V$ is backed in its vote's $\ell < v_r$ by \CommitsBacked, and by
+$V$ is backed in its \dvc{}'s $\ell < v_r$ by \CommitsBacked, and by
 \Survival{} the chosen log holds the same entries, so
 $\Backed(v_r, k^*)$; in particular $k^* \le |\mathit{best}.L|$ and
 $k_r \le |\mathit{best}.L|$, so both guards hold.
@@ -1322,7 +1329,7 @@ is as in Lemma~\ref{lem:h-prepare}.
 The primary's re-sent \msg{Prepare} for op-number $n$ carries $L_r[n]$,
 a fragment of $v_r$ that the history already holds by clause (e) and
 \OneLog; its \msg{Commit} carries $k_r$, backed by \CommitsBacked. A
-re-sent vote is the case of Lemma~\ref{lem:h-svc}. Starting view
+re-sent \dvc{} is the case of Lemma~\ref{lem:h-svc}. Starting view
 $v_r + 1$ is the case of Lemma~\ref{lem:h-svc} with $v > v_r$.
 \end{proof}
 
@@ -1509,7 +1516,7 @@ replica stops accepting \msg{Prepare} from the old view the moment it
 enters view-change status, so the old primary cannot commit anything the
 new primary does not see.
 
-\begin{departure}{read as an increment, ``advances its view-number'' lets a primary count votes cast for different views together}
+\begin{departure}{read as an increment, ``advances its view-number'' lets a primary count \dvc{} messages sent for different views together}
 \S4.2 says a replica that
 receives \msg{StartViewChange} for a later view ``advances its
 view-number'', which can be read as adopting the received view or as
@@ -1691,7 +1698,7 @@ This paper & Lean \\
 Definitions~\ref{def:config} to~\ref{def:messages} & \texttt{Config}, \texttt{Replica}, \texttt{Message} \\
 Definition~\ref{def:cluster}, \ref{def:step} & \texttt{System}, \texttt{Step}, \texttt{System.step} \\
 Lemma~\ref{lem:quorum} & \texttt{Config.quorum\_intersect}, \texttt{filter\_mem\_length} \\
-Definition~\ref{def:voteof} & \texttt{DvcOf} \\
+Definition~\ref{def:dvcof} & \texttt{DvcOf} \\
 Definition~\ref{def:frag}, Holds & \texttt{Frag}, \texttt{Holds} \\
 Acknowledged, Committed, Backed & \texttt{Acked}, \texttt{QuorumAcked}, \texttt{Committed}, \texttt{Backed}, \texttt{MsgBacked} \\
 \Local & \texttt{LocalInv}, lifted as \texttt{AllLocal} \\
@@ -1741,8 +1748,8 @@ Clause & Lean fields \\
 \midrule
 (a) Views only rise & \texttt{MessagesBelowView}, \texttt{DvcBelowView}, \texttt{ViewChangeBehind}, \texttt{DvcBehind}, \texttt{PrimaryStartedNormal} \\
 (b) Chosen from a quorum, once & \texttt{StartViewChosen}, \texttt{StartedOnce}, \texttt{ViewExtendsBase} \\
-(c) Votes cover acknowledgements & \texttt{DvcCoversAcks}, \texttt{DvcPrimaryCovers} \\
-(d) Votes come after acknowledgements & \texttt{DvcAfterAcks}, \texttt{DvcAfterOwnView} \\
+(c) DoViewChanges cover acknowledgements & \texttt{DvcCoversAcks}, \texttt{DvcPrimaryCovers} \\
+(d) DoViewChanges come after acknowledgements & \texttt{DvcAfterAcks}, \texttt{DvcAfterOwnView} \\
 (e) Primary is longest & \texttt{PrimaryLongest} \\
 (f) Acknowledgements are kept & \texttt{AcksHold}, \texttt{AcksCurrent}, \texttt{AcksStarted} \\
 (g) Recovery covers acknowledgements & \texttt{RecoveryCoversAcks}, \texttt{RecoveryResponseNonce}, \texttt{RecoveryStateFromPrimary}, \texttt{RecoveryResponseNotSelf}, \texttt{RecordedRRs} \\
