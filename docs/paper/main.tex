@@ -142,7 +142,7 @@ states.
 
 This paper states that protocol and proves it safe. Section~\ref{sec:prelim}
 formalises the cluster as a transition system; Sections~\ref{sec:normal}
-to~\ref{sec:recovery} give the handlers as pseudocode with every erratum
+to~\ref{sec:recovery} give the actions as pseudocode with every erratum
 applied and marked; Appendix~\ref{app:vr} walks through the published
 protocol and explains each correction where the paper's text leads
 wrong. The proof is an inductive invariant over the history of every
@@ -190,7 +190,7 @@ We prove the theorem with an inductive invariant: a statement $\Inv$
 about a cluster state that holds in the initial cluster, that every step
 preserves, and that implies the theorem. Induction on the number of
 steps then gives the theorem in every reachable state, and the whole
-proof reduces to one case per handler, showing that it preserves
+proof reduces to one case per action, showing that it preserves
 $\Inv$. This is the standard method for safety of a distributed
 protocol, and the whole difficulty is in choosing $\Inv$. It must be
 stronger than the theorem, because the theorem alone is not preserved by
@@ -247,9 +247,9 @@ fails at the replica that adopted a lower number.
 
 Section~\ref{sec:prelim} fixes notation, the model of a cluster, and the
 invariant. Section~\ref{sec:framework} states the interface of every
-handler as a lemma and proves the theorem from those interfaces, before
-any handler is shown. Sections~\ref{sec:normal} to~\ref{sec:recovery}
-give the handlers as pseudocode, one section per sub-protocol, each with
+action as a lemma and proves the theorem from those interfaces, before
+any action is shown. Sections~\ref{sec:normal} to~\ref{sec:recovery}
+give the actions as pseudocode, one section per sub-protocol, each with
 an overview and the analysis that proves its interface lemmas.
 Appendix~\ref{app:vr} is the published protocol and its corrections.
 Appendix~\ref{app:lean} is the mechanised proof.
@@ -328,11 +328,11 @@ $\Sigma \to \Sigma'$ is one of: \emph{deliver} some $(\mathit{to}, m) \in
 \sent$ to replica $\mathit{to}$; \emph{idle} at some replica; \emph{request}
 $(c, s, \mathit{op})$ at some replica; \emph{recover} some replica with
 the view number it holds in $\Sigma$ and a nonce that no \msg{Recovery}
-in $\sent$ carries. The replica runs the handler of
-Sections~\ref{sec:normal} to~\ref{sec:recovery}, subject to one rule
-that precedes every handler: a replica whose status is \recovering{}
-handles only \msg{RecoveryResponse} and the idle step, and drops every
-other message unchanged. Everything the replica sends, replies, and
+in $\sent$ carries. The replica takes the action of
+Sections~\ref{sec:normal} to~\ref{sec:recovery} for that message,
+subject to one rule that precedes every action: a replica whose status
+is \recovering{} processes only \msg{RecoveryResponse} and the idle
+step, and drops every other message unchanged. Everything the replica sends, replies, and
 starts is added to $\sent$, $\mathit{replies}$, and $\started$, which
 therefore only grow.
 \end{definition}
@@ -631,8 +631,8 @@ $\Inv$ & the invariant, Definition~\ref{def:inv} \\
 \section{The framework}
 \label{sec:framework}
 
-This section states what each handler guarantees and proves the theorem
-from those guarantees. The handlers themselves are in
+This section states what each action guarantees and proves the theorem
+from those guarantees. The actions themselves are in
 Sections~\ref{sec:normal} to~\ref{sec:recovery}, each of which ends by
 proving the interface lemmas stated here.
 
@@ -640,48 +640,48 @@ proving the interface lemmas stated here.
 where the protocol's control ends. Assumption~\ref{asm:model} is about
 the world the protocol runs in: the network, what a crash keeps, when
 timers fire, where a nonce comes from. Nothing the protocol produces is
-assumed. A replica's fields are written by its handlers, and a message's
+assumed. A replica's fields are written by its actions, and a message's
 fields by the replica that sends it, so any fact about them is the
 protocol's responsibility and must come out of the induction. That
-includes the two facts every handler relies on to run at all: that its
+includes the two facts every action relies on to run at all: that its
 own commit number is within its own log, and that the message it was
 handed has fields that agree with each other. These are the input
-requirements of the handlers, in the sense that a subroutine has
-preconditions its callers must meet. The callers here are the handler
+requirements of the actions, in the sense that a subroutine has
+preconditions its callers must meet. The callers here are the action
 that ran before, for a replica's state, and the sender, for a message.
 We do not assume the callers comply. We prove it at every call site:
-\Local{} is proved once for every handler, and \WellFormed{} once for
+\Local{} is proved once for every action, and \WellFormed{} once for
 every send. Everything above them in the invariant is proved the same
-way, one handler at a time, from the interface lemmas below.
+way, one action at a time, from the interface lemmas below.
 
 \paragraph{Where a commit is born.} $\Committed(v, n, e)$ is a fact
 about the history: $Q$ acknowledgements of $n$ in $v$ exist. It
 therefore comes into existence at the moment the $Q$th
 \msg{PrepareOk} is \emph{sent}, not when the primary receives it, and
 the obligation to show that every later view holds $e$
-(\Survival) falls on the sender. Three handlers send acknowledgements,
+(\Survival) falls on the sender. Three actions send acknowledgements,
 \msg{Prepare}, \msg{NewState}, and \msg{StartView}, and each of their
-interface lemmas carries that obligation. The primary's handler for
+interface lemmas carries that obligation. The primary's action on
 \msg{PrepareOk} only reads a quorum that already exists.
 
-\subsection{Interfaces of the handlers}
+\subsection{Interfaces of the actions}
 
 Every interface lemma has the same shape. \textsc{Precondition} is what
-the handler may assume, always including $\Inv$. \textsc{Effect} is what
+the action may assume, always including $\Inv$. \textsc{Effect} is what
 it changes and sends. \textsc{Guarantee} is what holds afterwards:
 $\Inv$ again, plus the fact the step establishes that the rest of the
-proof uses. A handler whose guard fails has no effect and trivially
+proof uses. An action whose guard fails has no effect and trivially
 preserves $\Inv$. The rule of Definition~\ref{def:step} that a recovering
-replica handles nothing but \msg{RecoveryResponse} is a guard of every
-other handler, and is what makes ``not recovering'' a precondition
+replica processes nothing but \msg{RecoveryResponse} is a guard of every
+other action, and is what makes ``not recovering'' a precondition
 below.
 
-One guarantee is shared by every handler and needs no assumption about
+One guarantee is shared by every action and needs no assumption about
 the message received, so it is stated once.
 
 \begin{lemma}[Local]
 \label{lem:local}
-Every handler of Sections~\ref{sec:normal} to~\ref{sec:recovery}, given
+Every action of Sections~\ref{sec:normal} to~\ref{sec:recovery}, given
 any message, leaves the replica satisfying \Local{}
 (Definition~\ref{def:local}): its commit number within its log, its
 last normal view not ahead of its view, and its status consistent with
@@ -697,7 +697,7 @@ Every log sent is sent with its own length and the sender's commit
 number, which \Local{} bounds.
 \end{proof}
 
-The remaining lemmas are one per handler.
+The remaining lemmas are one per action.
 
 \begin{lemma}[Request]
 \label{lem:h-request}
@@ -825,8 +825,8 @@ The remaining lemmas are one per handler.
 \begin{lemma}[Recovery and RecoveryResponse]
 \label{lem:h-recovery}
 \begin{iface}
-  \item[Precondition] $\Inv$; a \msg{Recovery} is handled only by a
-    replica that is not recovering.
+  \item[Precondition] $\Inv$; only a replica that is not recovering
+    processes a \msg{Recovery}.
   \item[Effect] On \msg{Recovery} carrying $v > v_r$, adopts $v$. On
     \msg{Recovery} in normal status, answers with $v_r$ and, if primary,
     with $(L_r, k_r)$. On the $Q$th \msg{RecoveryResponse} for its nonce,
@@ -885,8 +885,8 @@ $\Sigma \to \Sigma'$ then $\Inv(\Sigma')$. Hence $\Inv$ holds in every
 reachable cluster.
 \end{theorem}
 \begin{proof}
-Lemma~\ref{lem:init} for the initial cluster. A step runs one handler at
-one replica; every handler is covered by exactly one of
+Lemma~\ref{lem:init} for the initial cluster. A step is one action at
+one replica; every action is covered by exactly one of
 Lemmas~\ref{lem:h-request} to~\ref{lem:h-idle}, whose guarantee includes
 $\Inv$, or its guard fails and nothing changes. Induction on the number
 of steps.
@@ -964,7 +964,7 @@ backup that finds a gap asks for the missing log with \msg{GetState}; a
 replica that learns of a later view keeps its committed prefix and asks
 for the rest of the new view's log from there.
 Algorithm~\ref{alg:helpers} gives the helpers every section uses;
-Algorithm~\ref{alg:normal} the handlers.
+Algorithm~\ref{alg:normal} the actions.
 
 \begin{algorithm}[tp]
 \caption{Log and status helpers. $r$ is the replica.}
@@ -1009,7 +1009,7 @@ Algorithm~\ref{alg:normal} the handlers.
 
 \begin{algorithm}[tp]
 \caption{Normal operation and state transfer. The first rule applies to
-every handler of Algorithms~\ref{alg:normal}, \ref{alg:viewchange},
+every action of Algorithms~\ref{alg:normal}, \ref{alg:viewchange},
 and~\ref{alg:recovery}.}
 \label{alg:normal}
 \begin{algorithmic}[1]
@@ -1174,7 +1174,7 @@ tie,
 which by Lemma~\ref{lem:chosen} holds everything any earlier view
 committed, and announces it with \msg{StartView}.
 Algorithm~\ref{alg:vchelpers} gives the helpers,
-Algorithm~\ref{alg:viewchange} the handlers, and Algorithm~\ref{alg:idle}
+Algorithm~\ref{alg:viewchange} the actions, and Algorithm~\ref{alg:idle}
 the idle step whose timer starts it all.
 
 \begin{algorithm}[tp]
@@ -1341,10 +1341,10 @@ $v_r + 1$ is the case of Lemma~\ref{lem:h-svc} with $v > v_r$.
 A replica that comes back with nothing but its persisted view number
 asks everyone what it missed. It waits for $Q$ answers to its nonce, one
 of them from the primary of the latest view among them, and adopts that
-primary's log. Until then it handles nothing else, by the first rule of
+primary's log. Until then it processes nothing else, by the first rule of
 Algorithm~\ref{alg:normal}. Its \msg{Recovery}
 carries the persisted view, so replicas behind it move forward first.
-Algorithm~\ref{alg:recovery} gives the handlers.
+Algorithm~\ref{alg:recovery} gives the actions.
 
 \begin{algorithm}[tp]
 \caption{Recovery.}
@@ -1660,7 +1660,7 @@ are the only hypotheses; they are Assumption~\ref{asm:model}(i) and (iv).
 Assumption~\ref{asm:model}(iii) is built into the \emph{recover} step,
 which restarts the replica with the view number it held.
 Assumption~\ref{asm:model}(ii) is built into the model of time: the
-handlers keep the protocol's idle counters, and the environment chooses
+actions keep the protocol's idle counters, and the environment chooses
 which replica idles when, so every schedule is a reachable execution.
 
 The model's logs are indexed from zero. Op-number $n$ of this paper is
@@ -1673,7 +1673,7 @@ The model is a twin of an implementation: one Lean definition per
 function of the implementation, with the same control flow, sending to
 an outbox and appending replies to a list. Where the implementation
 checks a guard inside \Call{InstallLog}{} or \Call{CommitUpTo}{}, the
-model sets a flag instead of stopping, so every handler is total and
+model sets a flag instead of stopping, so every action is total and
 ``no guard fails'' is a property to prove, \texttt{NoPanic}. The model
 is held to the implementation by differential testing rather than by
 translation: a generator produces seeded traces of cluster steps, both
@@ -1737,7 +1737,7 @@ Theorem~\ref{thm:log}(iii) & \texttt{commitBounded\_of\_reachable} \\
 
 Lemma~\ref{lem:primary}, why views agree, has no single counterpart: it
 is the explanation of \OneLog, whose preservation is one obligation of
-each handler lemma above. The clauses of Definition~\ref{def:inv} are
+each action's lemma above. The clauses of Definition~\ref{def:inv} are
 the following fields of \texttt{Inv}.
 
 \begin{center}
@@ -1766,7 +1766,7 @@ applied. \texttt{StepOK} collects one obligation per field of
 \texttt{Inv}, each about the new replica, the new messages, and the new
 started view only; facts about old messages and untouched replicas
 transfer by Lemma~\ref{lem:mono}, and \texttt{Inv.after} turns
-\texttt{StepOK} into \texttt{Inv} of the new cluster. A handler is a
+\texttt{StepOK} into \texttt{Inv} of the new cluster. An action is a
 chain of helpers, and its proof follows the chain through the cluster as
 it will be once the replica's outbox is handed over
 (\texttt{System.drainOf}), one reusable link per kind of change:
