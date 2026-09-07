@@ -185,13 +185,19 @@ assumptions, and the correspondence.
 
 \subsection{Technique}
 
-The theorem is not preserved by a single protocol step on its own. When
-an acknowledgement completes a quorum and an entry becomes committed,
-whether it is now held by a majority depends on what the other
-acknowledgements said, and nothing in the theorem records that. We
-strengthen the statement into an inductive invariant $\Inv$
-(Section~\ref{sec:invariant}) that holds initially, is preserved by
-every step, and implies the theorem.
+We prove the theorem with an inductive invariant: a statement $\Inv$
+about a cluster state that holds in the initial cluster, that every step
+preserves, and that implies the theorem. Induction on the number of
+steps then gives the theorem in every reachable state, and the whole
+proof reduces to one case per handler, showing that it preserves
+$\Inv$. This is the standard method for safety of a distributed
+protocol, and the whole difficulty is in choosing $\Inv$. It must be
+stronger than the theorem, because the theorem alone is not preserved by
+every step: at the step where an acknowledgement completes a quorum and
+an entry becomes committed, showing the new entry durable needs to know
+which replicas acknowledged it, and prefix agreement and durability say
+nothing about acknowledgements. $\Inv$ (Section~\ref{sec:invariant})
+records what the induction needs.
 
 $\Inv$ is stated over the \emph{history}: the set of every message ever
 sent, which delivery never removes from. Replicas forget, since a view
