@@ -400,19 +400,34 @@ fn run_peer_acceptor(listener: TcpListener, events: Sender<Event>) {
     for stream in listener.incoming().flatten() {
         let events = events.clone();
         thread::spawn(move || {
-            for line in BufReader::new(stream).lines().map_while(Result::ok) {
-                match decode(&line) {
-                    Ok(Frame::Message(message)) => {
-                        let _ = events.send(Event::Message(message));
-                    }
-                    Ok(Frame::Reply(reply)) => {
-                        let _ = events.send(Event::Reply(reply));
-                    }
-                    Err(err) => warn!("bad message from peer: {err}"),
-                }
+            for frame in read_frames(stream) {
+                let event = match frame {
+                    Frame::Message(message) => Event::Message(message),
+                    Frame::Reply(reply) => Event::Reply(reply),
+                };
+                let _ = events.send(event);
             }
         });
     }
+}
+
+fn read_frames(stream: TcpStream) -> impl Iterator<Item = Frame> {
+    let mut reader = BufReader::new(stream);
+    let lines = std::iter::from_fn(move || {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(_) if line.ends_with('\n') => {
+                line.pop();
+                Some(line)
+            }
+            _ => None,
+        }
+    });
+    lines.filter_map(|line| {
+        decode(&line)
+            .inspect_err(|err| warn!("bad message from peer: {err}"))
+            .ok()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -796,6 +811,85 @@ fn main() {
                     ""
                 }
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use std::thread;
+    use std::time::Duration;
+
+    fn prepare_put(value: &str) -> Frame {
+        Frame::Message(Message::Prepare {
+            view_number: 0,
+            op_number: 1,
+            commit_number: 0,
+            client_id: 7,
+            request_number: 0,
+            op: Op::Put("key".into(), value.into()),
+        })
+    }
+
+    fn peer_acceptor() -> (std::net::SocketAddr, Receiver<Event>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (events, received) = channel();
+        thread::spawn(move || run_peer_acceptor(listener, events));
+        (address, received)
+    }
+
+    /// Regression test case for https://github.com/penberg/vsr-rs/issues/12
+    #[test]
+    fn peer_eof_does_not_complete_an_unterminated_prepare() {
+        let (address, received) = peer_acceptor();
+        let frame = encode(&prepare_put("ABCDEFGHIJ"));
+        let prefix = frame.strip_suffix("DEFGHIJ").unwrap();
+
+        let mut peer = TcpStream::connect(address).unwrap();
+        peer.write_all(prefix.as_bytes()).unwrap();
+        peer.shutdown(Shutdown::Write).unwrap();
+
+        match received.recv_timeout(Duration::from_secs(1)) {
+            Ok(Event::Message(Message::Prepare { op, .. })) => {
+                panic!("incomplete frame was dispatched as {op:?}")
+            }
+            Ok(_) => panic!("incomplete frame dispatched an unexpected event"),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(err) => panic!("event channel failed: {err}"),
+        }
+    }
+
+    #[test]
+    fn peer_eof_keeps_the_terminated_frames_before_it() {
+        let (address, received) = peer_acceptor();
+        let complete = encode(&prepare_put("ABCDEFGHIJ"));
+        let frame = encode(&prepare_put("KLMNOPQRST"));
+        let prefix = frame.strip_suffix("NOPQRST").unwrap();
+
+        let mut peer = TcpStream::connect(address).unwrap();
+        peer.write_all(format!("{complete}\n{prefix}").as_bytes())
+            .unwrap();
+        peer.shutdown(Shutdown::Write).unwrap();
+
+        match received.recv_timeout(Duration::from_secs(1)) {
+            Ok(Event::Message(Message::Prepare { op, .. })) => {
+                assert_eq!(op, Op::Put("key".into(), "ABCDEFGHIJ".into()))
+            }
+            Ok(_) => panic!("expected the complete PREPARE, got another event"),
+            Err(err) => panic!("expected the complete PREPARE, got {err}"),
+        }
+        match received.recv_timeout(Duration::from_millis(500)) {
+            Err(RecvTimeoutError::Timeout) => {}
+            Ok(Event::Message(Message::Prepare { op, .. })) => {
+                panic!("incomplete frame was dispatched as {op:?}")
+            }
+            Ok(_) => panic!("unexpected second event"),
+            Err(err) => panic!("event channel failed: {err}"),
         }
     }
 }
