@@ -1,0 +1,1795 @@
+\documentclass[11pt,a4paper]{article}
+
+% === Packages ===
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage[most]{tcolorbox}
+\usepackage[hidelinks]{hyperref}
+
+% === Errata to the published protocol, set off from the running text ===
+\newtcolorbox{departure}[1]{
+  breakable,
+  enhanced,
+  colback=black!4,
+  colframe=black!60,
+  boxrule=0.6pt,
+  arc=1pt,
+  left=6pt, right=6pt, top=4pt, bottom=4pt,
+  fonttitle=\bfseries\small,
+  coltitle=black,
+  colbacktitle=black!10,
+  title={Erratum: #1},
+  before skip=8pt, after skip=8pt
+}
+
+% === Settings ===
+\bibliographystyle{plainnat}
+\algnewcommand{\On}[1]{\item[\textbf{on}] #1}
+\algnewcommand{\Send}[2]{\State send #1 to #2}
+\algnewcommand{\Guard}[1]{\State \textbf{require} #1}
+
+% === Theorem environments, numbered by section ===
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+% === Interface lemmas: labelled parts ===
+\newlist{iface}{description}{1}
+\setlist[iface]{nosep,leftmargin=1.2em,font=\normalfont\scshape}
+
+% === Macros for the protocol ===
+\newcommand{\msg}[1]{\textsc{#1}}
+\newcommand{\dvc}{\msg{DoViewChange}}
+\newcommand{\Inv}{\mathcal{I}}
+\newcommand{\Frag}{\mathrm{Frag}}
+\newcommand{\Holds}{\mathrm{Holds}}
+\newcommand{\Acked}{\mathrm{Acked}}
+\newcommand{\QuorumAcked}{\mathrm{QuorumAcked}}
+\newcommand{\Committed}{\mathrm{Committed}}
+\newcommand{\Backed}{\mathrm{Backed}}
+\newcommand{\Sent}{\mathrm{Sent}}
+\newcommand{\primary}{\mathrm{primary}}
+\newcommand{\sent}{\mathit{sent}}
+\newcommand{\started}{\mathit{started}}
+\newcommand{\status}{\mathit{status}}
+\newcommand{\normal}{\textsc{normal}}
+\newcommand{\viewchange}{\textsc{view-change}}
+\newcommand{\transfer}{\textsc{transfer}}
+\newcommand{\recovering}{\textsc{recovering}}
+\newcommand{\Local}{\textsc{Replica-consistency}}
+\newcommand{\WellFormed}{\textsc{Message-consistency}}
+\newcommand{\OneLog}{\textsc{View-agreement}}
+\newcommand{\CommitsBacked}{\textsc{Commit-quorums}}
+\newcommand{\Survival}{\textsc{Commit-survival}}
+\newcommand{\dep}[1]{\Comment{App.~\ref{#1}}}
+\newcommand{\why}[1]{\Comment{Lemma~\ref{#1}}}
+\newcommand{\whydep}[2]{\Comment{Lemma~\ref{#1}; App.~\ref{#2}}}
+
+% === Metadata ===
+\title{Viewstamped Replication Made Live}
+\author{Pekka Enberg}
+\date{Draft of \today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent
+Viewstamped Replication is a protocol for replicating a state machine
+across a cluster of machines that can crash: a primary orders the
+operations, a quorum of backups acknowledges them, and a view change
+replaces the primary when it fails. It was introduced by Oki and Liskov
+in 1988 and revised by Liskov and Cowling in 2012, which adds a recovery
+protocol that needs no disk. The 2012 presentation has known bugs: its recovery can lose
+committed data, its state transfer can lose committed data, and its
+commit-number handling can execute an operation twice. This paper
+formalises the protocol with the errata applied, as a transition system
+and as pseudocode, and proves it safe: in every reachable state, two
+replicas that have both committed an op-number hold the same entry
+there, and every committed entry is held by enough replicas to be in
+every quorum they could form. The proof is an inductive invariant over
+the history of every message ever sent, and it is machine-checked in
+Lean~4.
+\\[6pt]
+\textit{Keywords}: Viewstamped Replication, state machine replication,
+consensus, inductive invariants, Lean
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+Viewstamped Replication keeps a service available by running the same
+deterministic operations, in the same order, on several machines. One
+replica, the primary, assigns each client operation a position in a log
+and sends it to the others; once a quorum has acknowledged it, the
+operation is committed and every replica executes it. If the primary
+fails, the backups move to a new \emph{view} with a new primary chosen
+by a fixed rule, and the new primary starts from a log that a quorum has
+seen, so nothing committed is lost. Oki and Liskov introduced the
+protocol in 1988~\citep{oki1988vr}, inside a transactional system. Liskov
+and Cowling revised it in 2012~\citep{liskov2012vr}, presenting it on its
+own, with a state transfer protocol for replicas that fall behind and a
+recovery protocol that lets a replica rejoin after losing all its memory
+without ever having written to disk.
+
+The 2012 presentation has known bugs. Its diskless recovery lets a
+replica forget it took part in a view change and complete that change
+later from stale messages, which loses committed
+data~\citep{michael2017recovery}. Its state transfer truncates a log
+below an entry the replica has already acknowledged, which also loses
+committed data, and its commit-number handling lets a replica adopt a
+lower commit number and execute an operation
+twice~\citep{vanlightly2022vr}. Each has a known fix. An implementation
+must apply all of them, and then runs a protocol that no single paper
+states.
+
+This paper states that protocol and proves it safe. Section~\ref{sec:prelim}
+formalises the cluster as a transition system; Sections~\ref{sec:normal}
+to~\ref{sec:recovery} give the handlers as pseudocode with every erratum
+applied and marked; Appendix~\ref{app:vr} walks through the published
+protocol and explains each correction where the paper's text leads
+wrong. The proof is an inductive invariant over the history of every
+message ever sent, and it is machine-checked in Lean~4
+(Appendix~\ref{app:lean}).
+
+\subsection{Our result}
+
+Fix a cluster of $N \ge 2$ replicas running the protocol of
+Sections~\ref{sec:normal} to~\ref{sec:recovery} on an asynchronous
+network that may lose, delay, duplicate, and reorder messages, in which
+replicas may crash and restart with nothing but their view number. Let
+$k_r$ be the commit number and $L_r$ the log of replica $r$, and let
+$\mathcal{R}$ be the set of replicas not currently recovering
+(Section~\ref{sec:prelim}).
+
+\begin{theorem}[Log safety]
+\label{thm:log}
+In every reachable cluster state:
+\begin{enumerate}[nosep,label=(\roman*)]
+  \item \emph{Prefix agreement.} If $n \le k_a$ and $n \le k_b$ then
+    $L_a[n] = L_b[n]$.
+  \item \emph{Durability.} For every $r \in \mathcal{R}$ and
+    $n \le k_r$, at least $|\mathcal{R}| + 1 - Q$ replicas in
+    $\mathcal{R}$ hold $L_r[n]$ at op-number $n$.
+  \item \emph{Commit bounded.} $k_r \le |L_r|$.
+\end{enumerate}
+\end{theorem}
+
+Durability says that every quorum the non-recovering replicas could form
+contains a replica holding the committed entry; with nobody recovering
+the bound is a majority. A recovering replica holds nothing and sends
+no \dvc{}, so it counts on neither side.
+
+The proof in the body of this paper is a hand proof at the level of
+detail of an algorithms paper. Every definition, lemma, and theorem in it
+has a counterpart in a Lean~4 development that proves
+Theorem~\ref{thm:log} in full from the same invariant, with no unproved
+step; Appendix~\ref{app:lean} states the mechanised theorem, its
+assumptions, and the correspondence.
+
+\subsection{Technique}
+
+We prove the theorem with an inductive invariant: a statement $\Inv$
+about a cluster state that holds in the initial cluster, that every step
+preserves, and that implies the theorem. Induction on the number of
+steps then gives the theorem in every reachable state, and the whole
+proof reduces to one case per handler, showing that it preserves
+$\Inv$. This is the standard method for safety of a distributed
+protocol, and the whole difficulty is in choosing $\Inv$. It must be
+stronger than the theorem, because the theorem alone is not preserved by
+every step: at the step where an acknowledgement completes a quorum and
+an entry becomes committed, showing the new entry durable needs to know
+which replicas acknowledged it, and prefix agreement and durability say
+nothing about acknowledgements. $\Inv$ (Section~\ref{sec:invariant})
+records what the induction needs.
+
+$\Inv$ is stated over the \emph{history}: the set of every message ever
+sent, which delivery never removes from. Replicas forget, since a view
+change replaces a backup's log, but the acknowledgement the backup sent
+stays in the history, and the invariant quantifies over that. The
+history also makes the network model one rule: delivery picks any
+message ever sent, which covers loss, delay, duplication, and reordering
+at once.
+
+$\Inv$ has five parts, named for what they say. \Local: each replica's
+own fields are consistent with one another. \WellFormed: each message's
+fields agree with one another. \OneLog: within a view, an op-number
+determines its entry, so every fragment of a view's log that the history
+holds agrees with every other. \CommitsBacked: every commit number, on a
+replica or in a message, has a quorum of acknowledgements behind every
+op-number up to it. \Survival: whatever was committed in a view is held,
+at the same op-number, by every later view. Around these are the clauses
+the induction turned out to need, most of them about the order in which
+things happened: a \dvc{} is sent after the acknowledgements its
+sender made, a view is started at most once, a primary's log in its view never
+shrinks. The lemma that carries the induction is the following.
+
+\begin{lemma}[The chosen log holds earlier commits]
+\label{lem:chosen-intro}
+Suppose entry $e$ was acknowledged at op-number $n$ in view $v$ by a
+quorum, and view $u > v$ was started from a quorum $V$ of \dvc{}
+messages, and every \dvc{} in $V$ from a view strictly between $v$ and
+$u$ holds $e$ at $n$. Then the \dvc{} of $V$ from which $u$'s log was
+chosen holds $e$ at $n$.
+\end{lemma}
+
+The two quorums intersect in a replica $x$. The \dvc{} $x$ sent for
+$u$ was sent after $x$ acknowledged $n$ in $v$, so it is from a view at
+least $v$; if from $v$ itself, it covers the acknowledgement; if from a
+later view, the hypothesis applies. The \dvc{} the new primary chooses
+is at least as good as $x$'s, by the ordering it uses, and holds $e$
+too. A strong
+induction on $u$ discharges the hypothesis. Each of the three safety
+corrections in Appendix~\ref{app:vr} is what makes one step of this
+argument go through: without a persisted view number a replica's view
+can go backwards; without the ban on truncation a \dvc{} need not
+cover what its sender acknowledged; without monotone commits \CommitsBacked{}
+fails at the replica that adopted a lower number.
+
+\subsection{Organisation}
+
+Section~\ref{sec:prelim} fixes notation, the model of a cluster, and the
+invariant. Section~\ref{sec:framework} states the interface of every
+handler as a lemma and proves the theorem from those interfaces, before
+any handler is shown. Sections~\ref{sec:normal} to~\ref{sec:recovery}
+give the handlers as pseudocode, one section per sub-protocol, each with
+an overview and the analysis that proves its interface lemmas.
+Appendix~\ref{app:vr} is the published protocol and its corrections.
+Appendix~\ref{app:lean} is the mechanised proof.
+
+\section{Preliminaries}
+\label{sec:prelim}
+
+\subsection{The cluster}
+
+\begin{definition}[Configuration]
+\label{def:config}
+$N \ge 2$ replicas with identities $0, \dots, N-1$; $f = \lfloor N/2
+\rfloor$; the quorum size $Q = f + 1$; and $\primary(v) = v \bmod N$, the
+primary of view $v$.
+\end{definition}
+
+\begin{definition}[Log]
+A log $L$ is a finite sequence of entries $e = (c, s, \mathit{op})$,
+client identity, request number, operation. The position of an entry in
+the log is its \emph{op-number}, counted from $1$: $L[n]$ is the entry
+with op-number $n$, for $1 \le n \le |L|$. $L(a{..}b]$ is the entries
+with op-numbers $a+1, \dots, b$, and $L \cdot e$ is the log with $e$
+appended, at op-number $|L|+1$.
+\end{definition}
+
+\begin{definition}[Replica]
+\label{def:replica}
+A replica $r$ has an identity $\mathrm{id}_r < N$; a status
+$\status_r$, one of \normal, \viewchange, \transfer, or \recovering; a view
+number $v_r$; a last normal view $\ell_r$, the latest view in which
+$\status_r$ was \normal; a log $L_r$ with $n_r = |L_r|$; a commit number
+$k_r$; a flag $\mathit{catching}_r$; a client table $C_r$ mapping client
+identities to a request number and an optional reply; acknowledgements
+$A_r$ mapping op-numbers to sets of identities; a set $S_r$ of
+identities; a flag $\mathit{dvcSent}_r$; the \dvc{} messages $V_r$
+received as new primary, mapping identities to their bodies; a nonce
+$x_r$; recovery responses $R_r$ mapping identities to
+responses; and a state machine state $\sigma_r$.
+$\mathrm{isPrimary}(r)$ means $\mathrm{id}_r = \primary(v_r)$.
+\end{definition}
+
+\begin{definition}[Messages]
+\label{def:messages}
+Eleven kinds. $i$ is an identity, $v$ a view, $n$ an op-number, $k$ a
+commit number, $L$ a log, $x$ a nonce, and $\mathit{st} \in \{\bot\} \cup
+\{(L, k)\}$ an optional state.
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+$\msg{Request}(c, s, \mathit{op})$ & $\msg{StartViewChange}(v, i)$ \\
+$\msg{Prepare}(v, n, e, k)$ & $\msg{DoViewChange}(v, i, \ell, L, n, k)$ \\
+$\msg{PrepareOk}(v, n, i)$ & $\msg{StartView}(v, L, n, k)$ \\
+$\msg{Commit}(v, k)$ & $\msg{Recovery}(i, x, v)$ \\
+$\msg{GetState}(i, v, n)$ & $\msg{RecoveryResponse}(v, x, i, \mathit{st})$ \\
+$\msg{NewState}(v, L, a, b, k)$ &
+\end{tabular}
+\end{center}
+The \emph{body} of a \dvc{} is the triple $(\ell, L, k)$ it carries:
+the sender's last normal view, its log, its commit number.
+\end{definition}
+
+\begin{definition}[Cluster]
+\label{def:cluster}
+A cluster state is $\Sigma = (\mathit{replicas}, \sent, \mathit{replies},
+\started)$: the replicas by identity; $\sent$, the set of every
+$(\mathit{to}, m)$ ever sent; $\mathit{replies}$, every reply
+$(v, c, s, x)$ ever produced; and $\started$, the set of $(v, V)$ for
+every view $v$ some primary started and the \dvc{} messages $V$ it
+chose the log from. $\Sent(\mathit{to}, m)$ means $(\mathit{to}, m) \in \sent$.
+$\mathcal{R}$ is the set of replicas with $\status \ne \recovering$.
+\end{definition}
+
+\begin{definition}[Step]
+\label{def:step}
+$\Sigma \to \Sigma'$ is one of: \emph{deliver} some $(\mathit{to}, m) \in
+\sent$ to replica $\mathit{to}$; \emph{idle} at some replica; \emph{request}
+$(c, s, \mathit{op})$ at some replica; \emph{recover} some replica with
+the view number it holds in $\Sigma$ and a nonce that no \msg{Recovery}
+in $\sent$ carries. The replica runs the handler of
+Sections~\ref{sec:normal} to~\ref{sec:recovery}, subject to one rule
+that precedes every handler: a replica whose status is \recovering{}
+handles only \msg{RecoveryResponse} and the idle step, and drops every
+other message unchanged. Everything the replica sends, replies, and
+starts is added to $\sent$, $\mathit{replies}$, and $\started$, which
+therefore only grow.
+\end{definition}
+
+\begin{definition}[Reachable]
+\label{def:reachable}
+The initial cluster has every replica with $\status = \normal$,
+$v = \ell = k = 0$, $L$ empty, every map and set empty, $\sigma$ the
+initial state, and the three sets of $\Sigma$ empty. A cluster is
+\emph{reachable} if it is obtained from the initial cluster by finitely
+many steps.
+\end{definition}
+
+\begin{assumption}
+\label{asm:model}
+Throughout:
+\begin{enumerate}[nosep,label=(\roman*)]
+  \item $N \ge 2$.
+  \item The environment chooses which replica takes an idle step and
+    when; the protocol's timers count those idle steps. Every schedule is
+    a reachable execution.
+  \item A replica's view number $v_r$ is written to stable storage after
+    every step and before anything the step produced is sent, and is the
+    only state a \emph{recover} step retains.
+  \item The nonce a \emph{recover} step uses is fresh: no \msg{Recovery}
+    in the history carries it.
+\end{enumerate}
+\end{assumption}
+
+\begin{remark}
+(i) excludes only the one-replica cluster, which never sends a message,
+so nothing about it can be stated through $\sent$; it is trivially safe.
+(ii) means safety is proved for every timing, including ones no timer
+would produce. (iii) is the one erratum to the published protocol's
+diskless design, and Appendix~\ref{app:recovery} shows it cannot be
+dropped. (iv) is the paper's ``nonce'' (\S4.3), which a clock or a
+persisted counter provides.
+\end{remark}
+
+\begin{lemma}[Quorum intersection]
+\label{lem:quorum}
+Two sets of at least $Q$ identities below $N$ have a common element.
+More precisely, two sets $X, Y$ of identities below $N$ share at least
+$|X| + |Y| - N$ elements.
+\end{lemma}
+\begin{proof}
+$|X \cap Y| = |X| + |Y| - |X \cup Y| \ge |X| + |Y| - N$, and
+$2Q = 2\lfloor N/2 \rfloor + 2 > N$.
+\end{proof}
+
+Delivery chooses a message from $\sent$ and leaves it there, so a
+message may arrive any number of times, in any order, or never. A
+replica that is never chosen to run is a crashed one.
+
+\subsection{The history}
+
+The invariant is stated over the history. The following definitions name
+the pieces of a view's log that the history holds.
+
+\begin{definition}[DoViewChange of]
+\label{def:dvcof}
+$\mathrm{Dvc}(u, x, d)$: replica $x$ sent a \dvc{} with body
+$d = (\ell, L, k)$ for view $u$. Either the history holds
+$\dvc(u, x, \ell, L, |L|, k)$, or $(u, V) \in \started$ with
+$(x, d) \in V$. The second case covers the new primary's own \dvc{},
+which it records without sending.
+\end{definition}
+
+\begin{definition}[Fragment]
+\label{def:frag}
+$\Frag(v, a, L)$: the history holds $L$ as a piece of view $v$'s log,
+the entries with op-numbers $a+1, \dots, a+|L|$. One rule per kind of
+message that carries log:
+\[
+\begin{array}{ll}
+\Sent(\_, \msg{Prepare}(v, n, e, \_)) & \Rightarrow \Frag(v, n-1, [e]) \\
+\Sent(\_, \msg{NewState}(v, L, a, \_, \_)) & \Rightarrow \Frag(v, a, L) \\
+\Sent(\_, \msg{StartView}(v, L, \_, \_)) & \Rightarrow \Frag(v, 0, L) \\
+\Sent(\_, \msg{RecoveryResponse}(v, \_, \_, (L, \_))) & \Rightarrow \Frag(v, 0, L) \\
+\mathrm{Dvc}(\_, \_, (\ell, L, \_)) & \Rightarrow \Frag(\ell, 0, L)
+\end{array}
+\]
+\end{definition}
+
+\begin{remark}
+A \dvc{} is a fragment of the view its sender was \emph{last normal
+in}, $\ell$, not of the view it is for. A replica catching up with a view
+has a view number ahead of its log; tagging by $\ell$ is what keeps it
+consistent with the rest.
+\end{remark}
+
+\begin{definition}[Holds]
+$\Holds(v, n, e)$: there are $a < n$ and $L$ with $\Frag(v, a, L)$ and
+$L[n - a] = e$.
+\end{definition}
+
+\begin{definition}[Acknowledged]
+\leavevmode
+\begin{enumerate}[nosep,label=(\roman*)]
+  \item $\Acked(v, n, q)$: $q = \primary(v)$, or the history holds
+    $\msg{PrepareOk}(v, o, q)$ for some $o \ge n$.
+  \item $\QuorumAcked(v, n)$: there are $Q$ distinct identities $q < N$
+    with $\Acked(v, n, q)$.
+\end{enumerate}
+\end{definition}
+
+\begin{definition}[Committed]
+$\Committed(v, n, e)$: $\Holds(v, n, e)$ and $\QuorumAcked(v, n)$.
+\end{definition}
+
+\begin{definition}[Backed]
+$\Backed(v, k)$: for every op-number $n \le k$,
+\[
+\exists\, e,\ v' \le v.\quad \Committed(v', n, e) \wedge \Holds(v, n, e).
+\]
+\end{definition}
+
+\begin{lemma}[The history is monotone]
+\label{lem:mono}
+$\mathrm{Dvc}$, $\Frag$, $\Holds$, $\Acked$, $\Committed$, and $\Backed$
+are preserved by every step.
+\end{lemma}
+\begin{proof}
+Each is defined by the existence of elements of $\sent$ and $\started$,
+which only grow.
+\end{proof}
+
+\subsection{The invariant}
+\label{sec:invariant}
+
+\begin{definition}[\Local]
+\label{def:local}
+At every replica: $k_r \le n_r$; $\ell_r \le v_r$; if $\status_r$ is
+\normal{} or \transfer{} then $\ell_r = v_r$; if $\mathit{catching}_r$
+then $\status_r = \viewchange$; if $\status_r = \recovering$ then
+$L_r = \varepsilon$ and $k_r = 0$.
+\end{definition}
+
+\begin{definition}[\WellFormed]
+\label{def:wellformed}
+Every message in $\sent$ has fields that agree with one another: a
+\msg{StartView} or \msg{DoViewChange} log is as long as its op-number and
+its commit number does not exceed it; a \msg{NewState} log is as long as
+$b - a$ with $a \le b$ and $k \le b$; a \msg{DoViewChange} has
+$\ell \le v$; a \msg{Prepare} has $n > 0$; a \msg{RecoveryResponse} state
+has $k \le |L|$.
+\end{definition}
+
+\begin{definition}[\OneLog]
+\label{def:viewagreement}
+\leavevmode
+\begin{enumerate}[nosep,label=(\roman*)]
+  \item Within a view, an op-number determines its entry:
+    $\Holds(v, n, e) \wedge \Holds(v, n, e') \Rightarrow e = e'$.
+  \item Every replica's log agrees with the fragments of the view it
+    came from: $L_r[n] = e \wedge \Holds(\ell_r, n, e') \Rightarrow e = e'$.
+\end{enumerate}
+\end{definition}
+
+\begin{remark}
+\OneLog{} says nothing across views: op-number $n$ may name different
+entries in views $4$ and $5$, which is the paper's own observation
+(\S4.2) that two operations can be assigned the same op-number only
+across a view change, and \Survival{} governs which of them matter. It
+is the property Raft calls log matching, with views for terms and message
+fragments alongside replica logs, and it is what lets the rest of the
+invariant say ``the entry at op-number $n$ in view $v$'' and mean one
+thing.
+\end{remark}
+
+\begin{definition}[\CommitsBacked]
+$\Backed(\ell_r, k_r)$ for every replica; and for every message in
+$\sent$ carrying a commit number $k$ in view $v$, $\Backed(v, k)$, a
+\dvc{} being judged by its last normal view.
+\end{definition}
+
+\begin{definition}[\Survival]
+If $\Committed(v', n, e)$ and $v' < v$, then every \msg{StartView} log
+of $v$, every \dvc{} from $v$, every recovery state of $v$, every
+\msg{NewState} segment of $v$ that reaches $n$, every \msg{Prepare} of
+$v$ for op-number $n$, and every non-recovering replica with
+$\ell_r = v$ holds $e$ at $n$.
+\end{definition}
+
+\begin{remark}
+This is the correctness condition of \citet[\S8.1]{liskov2012vr}, that
+``every committed operation survives into all subsequent views in the
+same position in the serial order'', stated over every fragment of a
+view rather than over the view as a whole.
+\end{remark}
+
+\begin{definition}[The invariant $\Inv$]
+\label{def:inv}
+\Local, \WellFormed, \OneLog, \CommitsBacked, and \Survival, together
+with the following clauses. Appendix~\ref{app:lean} lists each by its
+name in the mechanised proof.
+\begin{enumerate}[nosep,label=(\alph*)]
+  \item \emph{Views only rise.} No message in $\sent$, and no recorded
+    \dvc{}, carries a view above its sender's current view. A replica in
+    \viewchange{} status has $\ell_r < v_r$; a \dvc{} for $u$ is from a
+    view $\ell < u$; the primary of a started view $v$ has $\ell \ge v$.
+  \item \emph{Chosen from a quorum, once.} A view is started at most
+    once. A started view's \msg{StartView} log extends the best of the
+    $Q$ \dvc{} messages, from distinct replicas, it was started from.
+    Every whole log of a started view, and every \msg{NewState} of it,
+    reaches at least as far as that best \dvc{}'s log.
+  \item \emph{DoViewChanges cover acknowledgements.} A \dvc{} from $x$
+    covers every op-number $x$ acknowledged in its view $\ell$; if $x$ is
+    the primary of $\ell$, it covers every fragment of $\ell$.
+  \item \emph{DoViewChanges come after acknowledgements.} If $x$
+    acknowledged in view $v$, or is the primary of a started view $v$,
+    and sent a \dvc{} for $u > v$, that \dvc{} is from a view
+    $\ell \ge v$.
+  \item \emph{Primary is longest.} While $v$ is the last normal view of
+    $\primary(v)$ and it is not recovering, every fragment of $v$, every
+    log of a replica last normal in $v$, and every acknowledgement in
+    $v$ is within its log.
+  \item \emph{Acknowledgements are kept.} If $q$ sent
+    $\msg{PrepareOk}(v, o, q)$ then $\ell_q \ge v$, and while
+    $\ell_q = v$ and $q$ is not recovering, $n_q \ge o$. A normal
+    primary's record $A_r$ holds only acknowledgements of its own
+    op-numbers in its own view, each acknowledger once.
+  \item \emph{Recovery covers acknowledgements.} A recovery state is the
+    log of the primary of its view, answers a \msg{Recovery} with its
+    nonce, and, when it answers a replica now recovering, covers every
+    op-number that replica acknowledged in the state's view.
+  \item \emph{Bookkeeping.} Replica $i$ of the cluster has identity $i$;
+    there are $N$ replicas; every message names a sender below $N$; a
+    replica catching up or in state transfer is not its view's primary;
+    no \msg{Prepare} or \msg{Commit} is addressed to its view's primary;
+    every entry of every log is held by some fragment of the replica's
+    last normal view; two replicas with the same last normal view agree;
+    every view above zero with a fragment, an acknowledgement, or a
+    non-recovering replica was started, and every started view has a
+    \msg{StartView}; what a replica has recorded in $V_r$ or $R_r$ was
+    sent to it; between steps every outbox is empty; and no internal
+    guard of \Call{InstallLog}{} or \Call{CommitUpTo}{} has failed.
+\end{enumerate}
+\end{definition}
+
+\begin{remark}
+The three safety corrections of Appendix~\ref{app:vr} are each one
+clause. Truncation in state transfer would falsify (c). Diskless
+recovery would falsify (a), since a recovered replica's view could go
+down. A decreasing commit number would falsify \CommitsBacked{} at the
+replica that adopted it.
+\end{remark}
+
+Table~\ref{tab:notation} collects the notation.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Notation. Subscript $r$ names the replica; it is dropped when
+only one replica is in view.}
+\label{tab:notation}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Symbol & Meaning \\
+\midrule
+$N$ & number of replicas; identities are $0, \dots, N-1$ \\
+$f$ & $\lfloor N/2 \rfloor$, the failures tolerated \\
+$Q$ & $f + 1$, the quorum size \\
+$\primary(v)$ & $v \bmod N$, the primary of view $v$ \\
+\addlinespace
+$v_r$ & view number of replica $r$ \\
+$\ell_r$ & last normal view: the latest view $r$ was normal in \\
+$L_r$ & log of $r$, a sequence of entries with op-numbers $1, \dots, |L_r|$ \\
+$n_r$ & $|L_r|$, the op-number of the latest entry \\
+$k_r$ & commit number: the entries with op-numbers $1, \dots, k_r$ are committed \\
+$\sigma_r$ & state of $r$'s state machine \\
+$A_r, S_r, V_r, R_r, C_r$ & the maps and sets of Definition~\ref{def:replica} \\
+\addlinespace
+$e = (c, s, \mathit{op})$ & a log entry: client, request number, operation \\
+$L[n]$, $L(a{..}b]$, $L \cdot e$ & entry with op-number $n$; op-numbers $a+1, \dots, b$; append \\
+$(\ell, L, k)$ & a \dvc{} body: last normal view, log, commit number \\
+\addlinespace
+$\Sigma$ & a cluster state \\
+$\sent$ & every $(\mathit{to}, m)$ ever sent; never shrinks \\
+$\started$ & every $(v, V)$: view $v$ was started from the \dvc{}s $V$ \\
+$\mathcal{R}$ & the replicas whose status is not recovering \\
+$\Sent(\mathit{to}, m)$ & $(\mathit{to}, m) \in \sent$ \\
+$\mathrm{Dvc}(u, x, d)$ & $x$'s \dvc{} for view $u$ has body $d$, sent or recorded \\
+\addlinespace
+$\Frag(v, a, L)$ & the history holds $L$ as view $v$'s entries after op-number $a$ \\
+$\Holds(v, n, e)$ & some fragment of view $v$ has $e$ at op-number $n$ \\
+$\Acked(v, n, q)$ & replica $q$ acknowledged op-number $n$ in view $v$ \\
+$\QuorumAcked(v, n)$ & $Q$ distinct replicas acknowledged $n$ in $v$ \\
+$\Committed(v, n, e)$ & $\Holds(v, n, e)$ and $\QuorumAcked(v, n)$ \\
+$\Backed(v, k)$ & every op-number up to $k$ is committed with the entry $v$ holds \\
+$\Inv$ & the invariant, Definition~\ref{def:inv} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{The framework}
+\label{sec:framework}
+
+This section states what each handler guarantees and proves the theorem
+from those guarantees. The handlers themselves are in
+Sections~\ref{sec:normal} to~\ref{sec:recovery}, each of which ends by
+proving the interface lemmas stated here.
+
+\paragraph{What is assumed and what is proved.} The line is drawn
+where the protocol's control ends. Assumption~\ref{asm:model} is about
+the world the protocol runs in: the network, what a crash keeps, when
+timers fire, where a nonce comes from. Nothing the protocol produces is
+assumed. A replica's fields are written by its handlers, and a message's
+fields by the replica that sends it, so any fact about them is the
+protocol's responsibility and must come out of the induction. That
+includes the two facts every handler relies on to run at all: that its
+own commit number is within its own log, and that the message it was
+handed has fields that agree with each other. These are the input
+requirements of the handlers, in the sense that a subroutine has
+preconditions its callers must meet. The callers here are the handler
+that ran before, for a replica's state, and the sender, for a message.
+We do not assume the callers comply. We prove it at every call site:
+\Local{} is proved once for every handler, and \WellFormed{} once for
+every send. Everything above them in the invariant is proved the same
+way, one handler at a time, from the interface lemmas below.
+
+\paragraph{Where a commit is born.} $\Committed(v, n, e)$ is a fact
+about the history: $Q$ acknowledgements of $n$ in $v$ exist. It
+therefore comes into existence at the moment the $Q$th
+\msg{PrepareOk} is \emph{sent}, not when the primary receives it, and
+the obligation to show that every later view holds $e$
+(\Survival) falls on the sender. Three handlers send acknowledgements,
+\msg{Prepare}, \msg{NewState}, and \msg{StartView}, and each of their
+interface lemmas carries that obligation. The primary's handler for
+\msg{PrepareOk} only reads a quorum that already exists.
+
+\subsection{Interfaces of the handlers}
+
+Every interface lemma has the same shape. \textsc{Precondition} is what
+the handler may assume, always including $\Inv$. \textsc{Effect} is what
+it changes and sends. \textsc{Guarantee} is what holds afterwards:
+$\Inv$ again, plus the fact the step establishes that the rest of the
+proof uses. A handler whose guard fails has no effect and trivially
+preserves $\Inv$. The rule of Definition~\ref{def:step} that a recovering
+replica handles nothing but \msg{RecoveryResponse} is a guard of every
+other handler, and is what makes ``not recovering'' a precondition
+below.
+
+One guarantee is shared by every handler and needs no assumption about
+the message received, so it is stated once.
+
+\begin{lemma}[Local]
+\label{lem:local}
+Every handler of Sections~\ref{sec:normal} to~\ref{sec:recovery}, given
+any message, leaves the replica satisfying \Local{}
+(Definition~\ref{def:local}): its commit number within its log, its
+last normal view not ahead of its view, and its status consistent with
+both. Every message it sends satisfies \WellFormed{}
+(Definition~\ref{def:wellformed}).
+\end{lemma}
+\begin{proof}
+$k_r$ rises only in \Call{CommitUpTo}{}, which stops at $n_r$; a log is
+replaced only in \Call{InstallLog}{}, which refuses one shorter than
+$k_r$; $\ell_r$ is set only in \Call{EnterNormal}{}, to $v_r$; $v_r$ is
+set only to a larger value or, on recovery, to the persisted value.
+Every log sent is sent with its own length and the sender's commit
+number, which \Local{} bounds.
+\end{proof}
+
+The remaining lemmas are one per handler.
+
+\begin{lemma}[Request]
+\label{lem:h-request}
+\begin{iface}
+  \item[Precondition] $\Inv$; the replica is the normal primary of $v_r$
+    and the request is new for its client.
+  \item[Effect] Appends $e$ at op-number $n_r + 1$, records its own
+    acknowledgement of it, and sends $\msg{Prepare}(v_r, n_r+1, e, k_r)$
+    to the others.
+  \item[Guarantee] $\Inv$. The new fragment $\Frag(v_r, n_r, [e])$ lies
+    beyond every existing fragment of $v_r$.
+\end{iface}
+\end{lemma}
+
+\begin{lemma}[Prepare]
+\label{lem:h-prepare}
+\begin{iface}
+  \item[Precondition] $\Inv$; the message is accepted: $v = v_r$ and the
+    replica is a normal backup.
+  \item[Effect] If $n = n_r + 1$, appends $e$; commits up to
+    $\min(k, n_r)$; sends $\msg{PrepareOk}(v_r, n_r, \mathrm{id}_r)$ to
+    the primary. If $n > n_r + 1$, enters state transfer instead.
+  \item[Guarantee] $\Inv$. In particular, if the acknowledgement
+    completes a quorum for some op-number $m \le n_r$ in $v_r$, then
+    $\Committed(v_r, m, L_r[m])$ now holds and every started view above
+    $v_r$ holds $L_r[m]$ at $m$.
+\end{iface}
+\end{lemma}
+
+\begin{lemma}[PrepareOk]
+\label{lem:h-prepareok}
+\begin{iface}
+  \item[Precondition] $\Inv$; the replica is the normal primary of
+    $v_r$, $n > k_r$, and $n \in \mathrm{dom}\, A_r$.
+  \item[Effect] Adds $i$ to $A_r[n]$; if that makes $|A_r[n]| = Q$,
+    commits up to $n$ and replies to the clients of the committed
+    entries.
+  \item[Guarantee] $\Inv$. If the quorum completed, then
+    $\QuorumAcked(v_r, m)$ already holds in the history for every
+    $m \le n$, and hence $\Backed(v_r, n)$.
+\end{iface}
+\end{lemma}
+
+\begin{lemma}[Commit]
+\label{lem:h-commit}
+\begin{iface}
+  \item[Precondition] $\Inv$; the message is accepted.
+  \item[Effect] Commits up to $k$, or enters state transfer if
+    $k > n_r$.
+  \item[Guarantee] $\Inv$.
+\end{iface}
+\end{lemma}
+
+\begin{lemma}[GetState]
+\label{lem:h-getstate}
+\begin{iface}
+  \item[Precondition] $\Inv$; the replica is normal in $v = v_r$ and
+    $n \le n_r$.
+  \item[Effect] Sends $\msg{NewState}(v, L_r(n{..}n_r], n, n_r, k_r)$ to $i$.
+  \item[Guarantee] $\Inv$. The new fragment $\Frag(v, n, L_r(n{..}n_r])$
+    agrees with every fragment of $v$.
+\end{iface}
+\end{lemma}
+
+\begin{lemma}[NewState]
+\label{lem:h-newstate}
+\begin{iface}
+  \item[Precondition] $\Inv$; $v = v_r$.
+  \item[Effect] In \transfer{} status, appends the part of $L$ past
+    $n_r$, commits up to $k$, becomes normal, and acknowledges its whole
+    log. In \viewchange{} status while catching up with $a = k_r$,
+    replaces $L_r(k_r{..}n_r]$ by $L$, commits up to $k$, becomes normal
+    in $v_r$, and acknowledges its whole log.
+  \item[Guarantee] $\Inv$. Afterwards $\ell_r = v_r$ and $L_r$ agrees
+    with every fragment of $v_r$. The acknowledgement carries the same
+    guarantee as in Lemma~\ref{lem:h-prepare}.
+\end{iface}
+\end{lemma}
+
+\begin{lemma}[StartViewChange and DoViewChange]
+\label{lem:h-svc}
+\begin{iface}
+  \item[Precondition] $\Inv$; the replica is not recovering; $v \ge v_r$.
+  \item[Effect] If $v > v_r$, adopts $v$ in \viewchange{} status and
+    announces it. Records the sender. On $f$ senders, sends its \dvc{}
+    with body $(\ell_r, L_r, k_r)$ to $\primary(v_r)$, or records it if
+    it is the primary. On a \dvc{} as primary, records it; on the $Q$th,
+    starts the view (Lemma~\ref{lem:h-start}).
+  \item[Guarantee] $\Inv$. A \dvc{} sent by $r$ satisfies clauses (a), (c),
+    and (d) of Definition~\ref{def:inv}: it is from $\ell_r < v_r$, it
+    covers every op-number $r$ acknowledged in $\ell_r$, and it comes
+    after every acknowledgement $r$ made.
+\end{iface}
+\end{lemma}
+
+\begin{lemma}[Starting a view]
+\label{lem:h-start}
+\begin{iface}
+  \item[Precondition] $\Inv$; the replica is $\primary(v_r)$ in
+    \viewchange{} status and holds $Q$ \dvc{} messages $V$ from distinct
+    replicas,
+    each sent to it for $v_r$ or its own.
+  \item[Effect] Adds $(v_r, V)$ to $\started$; installs the log $L$ of
+    the best \dvc{}; commits up to the greatest $k$ in $V$; becomes normal
+    in $v_r$; sends $\msg{StartView}(v_r, L, |L|, k_r)$ to the others.
+  \item[Guarantee] $\Inv$. For every $u < v_r$ and every
+    $\Committed(u, n, e)$: $L[n] = e$. The guards of
+    \Call{InstallLog}{} and \Call{CommitUpTo}{} hold.
+\end{iface}
+\end{lemma}
+
+\begin{lemma}[StartView]
+\label{lem:h-startview}
+\begin{iface}
+  \item[Precondition] $\Inv$; the replica is not recovering; $v > v_r$,
+    or $v = v_r$ in \viewchange{} status.
+  \item[Effect] Adopts $v$; installs $L$; commits up to $k$; becomes
+    normal in $v$; acknowledges its whole log.
+  \item[Guarantee] $\Inv$. Afterwards $\ell_r = v$ and $L_r = L$. The
+    acknowledgement carries the same guarantee as in
+    Lemma~\ref{lem:h-prepare}. The guard of \Call{InstallLog}{} holds.
+\end{iface}
+\end{lemma}
+
+\begin{lemma}[Recovery and RecoveryResponse]
+\label{lem:h-recovery}
+\begin{iface}
+  \item[Precondition] $\Inv$; a \msg{Recovery} is handled only by a
+    replica that is not recovering.
+  \item[Effect] On \msg{Recovery} carrying $v > v_r$, adopts $v$. On
+    \msg{Recovery} in normal status, answers with $v_r$ and, if primary,
+    with $(L_r, k_r)$. On the $Q$th \msg{RecoveryResponse} for its nonce,
+    if one is from the primary of the latest view $v^*$ among them and
+    $v^* \ge v_r$, adopts that primary's log and commit number and becomes
+    normal in $v^*$.
+  \item[Guarantee] $\Inv$. A recovery state sent is a fragment of its
+    view that covers every acknowledgement in that view, clause (g).
+\end{iface}
+\end{lemma}
+
+\begin{lemma}[Recover]
+\label{lem:h-recover}
+\begin{iface}
+  \item[Precondition] $\Inv$; the persisted view is $v_r$; the nonce is
+    fresh (Assumption~\ref{asm:model}(iv)).
+  \item[Effect] Resets the replica to its initial state except
+    $v_r = \ell_r = v_r$, in \recovering{} status with the fresh nonce,
+    and sends $\msg{Recovery}(\mathrm{id}_r, x, v_r)$ to the others.
+  \item[Guarantee] $\Inv$. In particular clause (a): no message the
+    replica ever sent is ahead of $v_r$; and clause (g) for the new
+    nonce, vacuously, since no response to it exists yet.
+\end{iface}
+\end{lemma}
+
+\begin{lemma}[Idle]
+\label{lem:h-idle}
+\begin{iface}
+  \item[Precondition] $\Inv$.
+  \item[Effect] Re-sends: the primary its \msg{Commit} and every
+    uncommitted \msg{Prepare}; a recovering replica its \msg{Recovery};
+    a replica in transfer its \msg{GetState}; a replica in view change
+    its \msg{StartViewChange} and, if it has sent one, its \dvc{}. A
+    backup or
+    a replica in view change whose timer fires starts view $v_r + 1$.
+  \item[Guarantee] $\Inv$. Every fragment re-sent is one the history
+    already holds.
+\end{iface}
+\end{lemma}
+
+\subsection{The invariant is inductive}
+
+\begin{lemma}[Initial]
+\label{lem:init}
+$\Inv$ holds in the initial cluster.
+\end{lemma}
+\begin{proof}
+Nothing has been sent, so every clause about the history is vacuous;
+every replica is fresh, so every clause about replica state holds.
+\end{proof}
+
+\begin{theorem}[$\Inv$ is inductive]
+\label{thm:inductive}
+$\Inv$ holds in the initial cluster, and if $\Inv(\Sigma)$ and
+$\Sigma \to \Sigma'$ then $\Inv(\Sigma')$. Hence $\Inv$ holds in every
+reachable cluster.
+\end{theorem}
+\begin{proof}
+Lemma~\ref{lem:init} for the initial cluster. A step runs one handler at
+one replica; every handler is covered by exactly one of
+Lemmas~\ref{lem:h-request} to~\ref{lem:h-idle}, whose guarantee includes
+$\Inv$, or its guard fails and nothing changes. Induction on the number
+of steps.
+\end{proof}
+
+\subsection{Proof of Theorem~\ref{thm:log}}
+
+\begin{lemma}[Committed entries are what the view holds]
+\label{lem:committed}
+If $\Inv(\Sigma)$ and $n \le k_r$, there are $e$ and $v' \le \ell_r$ with
+$L_r[n] = e$, $\Committed(v', n, e)$, and $\Holds(\ell_r, n, e)$.
+\end{lemma}
+\begin{proof}
+\CommitsBacked{} gives $e$, $v'$, and $\Holds(\ell_r, n, e)$; \OneLog{}
+identifies $e$ with $L_r[n]$.
+\end{proof}
+
+\begin{lemma}[Later views hold earlier commits]
+\label{lem:later}
+If $\Inv(\Sigma)$, $\Committed(v', n, e)$, $v' < v$, and
+$\Holds(v, n, e')$, then $e' = e$.
+\end{lemma}
+\begin{proof}
+Cases on the fragment that holds $e'$, each a clause of \Survival.
+\end{proof}
+
+\begin{lemma}[An acknowledger holds the entry]
+\label{lem:acker}
+If $\Inv(\Sigma)$, $\Committed(v, n, e)$, and $z \in \mathcal{R}$ with
+$\Acked(v, n, \mathrm{id}_z)$, then $L_z[n] = e$.
+\end{lemma}
+\begin{proof}
+First $\ell_z \ge v$: by clause (f) if $z$ sent the acknowledgement, and
+by clause (a) if $z$ is the primary of $v$, since $v$ was started
+(clause (h)) and its primary has $\ell \ge v$. If $\ell_z > v$, the
+replica clause of \Survival{} gives $L_z[n] = e$. If $\ell_z = v$, the
+log reaches $n$: by clause (f) for a sent acknowledgement, by clause
+(e) for the primary, whose log covers every fragment of $v$ including the
+one holding $e$; and \OneLog(ii) identifies $L_z[n]$ with $e$.
+\end{proof}
+
+\begin{proof}[Proof of Theorem~\ref{thm:log}]
+Let $\Sigma$ be reachable; $\Inv(\Sigma)$ by
+Theorem~\ref{thm:inductive}.
+
+\emph{Prefix agreement.} For $n \le k_a, k_b$,
+Lemma~\ref{lem:committed} gives $e_a$ committed in $v_a$ and $e_b$
+committed in $v_b$; if $v_a < v_b$ then $e_b = e_a$ by
+Lemma~\ref{lem:later}, symmetrically if $v_b < v_a$, and by \OneLog(i)
+if equal.
+
+\emph{Durability.} Let $r \in \mathcal{R}$ and $n \le k_r$. By
+Lemma~\ref{lem:committed}, $e = L_r[n]$ is committed in some $v$, so
+some set $X$ of $Q$ distinct identities acknowledged $n$ in $v$. Let $P$
+be the identities of $\mathcal{R}$. By Lemma~\ref{lem:quorum},
+$|X \cap P| \ge Q + |\mathcal{R}| - N \ge |\mathcal{R}| + 1 - Q$, using
+$2Q \ge N + 1$. Every replica in $X \cap P$ holds $e$ at $n$ by
+Lemma~\ref{lem:acker}.
+
+\emph{Commit bounded.} \Local.
+\end{proof}
+
+\section{Normal operation and state transfer}
+\label{sec:normal}
+
+\subsection{Overview}
+
+The primary orders requests by appending them to its log and telling the
+backups with \msg{Prepare}. A backup acknowledges with its whole log
+length, so one \msg{PrepareOk} covers every op-number up to it. The
+primary commits an op-number, and everything before it, on $Q$
+acknowledgements counting its own, and tells the backups through the
+commit number in the next \msg{Prepare} or an idle \msg{Commit}. A
+backup that finds a gap asks for the missing log with \msg{GetState}; a
+replica that learns of a later view keeps its committed prefix and asks
+for the rest of the new view's log from there.
+Algorithm~\ref{alg:helpers} gives the helpers every section uses;
+Algorithm~\ref{alg:normal} the handlers.
+
+\begin{algorithm}[tp]
+\caption{Log and status helpers. $r$ is the replica.}
+\label{alg:helpers}
+\begin{algorithmic}[1]
+\Procedure{Append}{$e$}
+  \State $L_r \gets L_r \cdot e$;\quad $C_r[e.c] \gets (e.s, \bot)$
+\EndProcedure
+\Procedure{InstallLog}{$L$}
+  \Guard{$|L| \ge k_r$} \why{lem:local}
+  \State $L_r \gets L$; rebuild $C_r$ from $L$, keeping replies for op-numbers up to $k_r$
+\EndProcedure
+\Procedure{CommitUpTo}{$k$, $\mathit{reply}$}
+  \While{$k_r < k$} \dep{app:normal}
+    \Guard{$k_r < n_r$} \why{lem:local}
+    \State $k_r \gets k_r + 1$
+    \State $(\sigma_r, x) \gets \mathrm{apply}(\sigma_r, L_r[k_r].\mathit{op})$;\quad record $x$ in $C_r[L_r[k_r].c]$
+    \If{$\mathit{reply}$} reply $(v_r, L_r[k_r].c, L_r[k_r].s, x)$ \EndIf
+  \EndWhile
+\EndProcedure
+\Procedure{EnterNormal}{}
+  \State $\status_r \gets \normal$;\ $\ell_r \gets v_r$;\ $S_r, V_r \gets \emptyset$;\ $\mathit{dvcSent}_r, \mathit{catching}_r \gets \mathrm{false}$
+\EndProcedure
+\Procedure{StateTransfer}{}
+  \State $\status_r \gets \transfer$
+  \Send{$\msg{GetState}(\mathrm{id}_r, v_r, n_r)$}{the primary}
+\EndProcedure
+\Procedure{CatchUp}{$v$}
+  \If{$v = v_r \wedge \mathit{catching}_r$} \Return \EndIf
+  \State $v_r \gets v$;\ $\status_r \gets \viewchange$;\ $\mathit{catching}_r \gets \mathrm{true}$;\ $S_r, V_r \gets \emptyset$;\ $\mathit{dvcSent}_r \gets \mathrm{false}$
+  \Send{$\msg{GetState}(\mathrm{id}_r, v, k_r)$}{$\primary(v)$} \dep{app:transfer}
+\EndProcedure
+\Procedure{Accept}{$v$} \Comment{may this normal-case message be processed?}
+  \If{$v < v_r$} \Return false \EndIf
+  \If{$v > v_r$} \Call{CatchUp}{$v$}; \Return false \EndIf
+  \If{$\status_r = \normal$} \Return $\lnot\mathrm{isPrimary}(r)$ \EndIf
+  \If{$\status_r = \viewchange$} \Call{CatchUp}{$v$} \EndIf
+  \State \Return false
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[tp]
+\caption{Normal operation and state transfer. The first rule applies to
+every handler of Algorithms~\ref{alg:normal}, \ref{alg:viewchange},
+and~\ref{alg:recovery}.}
+\label{alg:normal}
+\begin{algorithmic}[1]
+\On{any message other than $\msg{RecoveryResponse}$} \Comment{Definition~\ref{def:step}}
+  \Guard{$\status_r \ne \recovering$}
+\On{$\msg{Request}(c, s, \mathit{op})$} \why{lem:h-request}
+  \Guard{$\mathrm{isPrimary}(r) \wedge \status_r = \normal$}
+  \If{$C_r[c]$ undefined or $s > C_r[c].s$}
+    \State \Call{Append}{$(c, s, \mathit{op})$};\ $A_r[n_r] \gets \{\mathrm{id}_r\}$
+    \Send{$\msg{Prepare}(v_r, n_r, (c, s, \mathit{op}), k_r)$}{others}
+  \ElsIf{$s = C_r[c].s$ and $C_r[c]$ holds a reply $x$}
+    \State reply $(v_r, c, s, x)$
+  \EndIf
+\On{$\msg{Prepare}(v, n, e, k)$} \why{lem:h-prepare}
+  \Guard{\Call{Accept}{$v$}}
+  \If{$n > n_r + 1$} \Call{StateTransfer}{}; \Return \EndIf
+  \If{$n = n_r + 1$} \Call{Append}{$e$} \EndIf
+  \State \Call{CommitUpTo}{$\min(k, n_r)$, false}
+  \Send{$\msg{PrepareOk}(v_r, n_r, \mathrm{id}_r)$}{the primary} \why{lem:newcommit}
+\On{$\msg{PrepareOk}(v, n, i)$} \why{lem:h-prepareok}
+  \Guard{$v = v_r \wedge \mathrm{isPrimary}(r) \wedge \status_r = \normal \wedge n > k_r \wedge n \in \mathrm{dom}\, A_r$}
+  \State $A_r[n] \gets A_r[n] \cup \{i\}$
+  \If{$i$ was new and $|A_r[n]| = Q$}
+    \State \Call{CommitUpTo}{$n$, true};\ remove every $n' \le n$ from $A_r$
+  \EndIf
+\On{$\msg{Commit}(v, k)$} \why{lem:h-commit}
+  \Guard{\Call{Accept}{$v$}}
+  \If{$k > n_r$} \Call{StateTransfer}{} \Else\ \Call{CommitUpTo}{$k$, false} \EndIf
+\On{$\msg{GetState}(i, v, n)$} \why{lem:h-getstate}
+  \Guard{$\status_r = \normal \wedge v = v_r \wedge n \le n_r$}
+  \Send{$\msg{NewState}(v, L_r(n{..}n_r], n, n_r, k_r)$}{$i$}
+\On{$\msg{NewState}(v, L, a, b, k)$} \why{lem:h-newstate}
+  \Guard{$v = v_r \wedge |L| = b - a$}
+  \If{$\status_r = \transfer$}
+    \If{$a > n_r \vee b \le n_r$} \Return \EndIf
+    \State \Call{Append}{$e$} for each $e$ in $L(n_r - a{..}b - a]$, in order
+    \State \Call{CommitUpTo}{$k$, false};\ $\status_r \gets \normal$
+    \Send{$\msg{PrepareOk}(v_r, n_r, \mathrm{id}_r)$}{the primary} \why{lem:newcommit}
+  \ElsIf{$\status_r = \viewchange \wedge \mathit{catching}_r \wedge a = k_r$}
+    \State \Call{InstallLog}{$L_r(0{..}a] \cdot L$} \dep{app:transfer}
+    \State \Call{CommitUpTo}{$k$, false};\ \Call{EnterNormal}{}
+    \Send{$\msg{PrepareOk}(v_r, n_r, \mathrm{id}_r)$}{the primary} \why{lem:newcommit}
+  \EndIf
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Analysis}
+
+\begin{lemma}[Why views agree]
+\label{lem:primary}
+Let $p = \primary(v)$. Then:
+\begin{enumerate}[nosep,label=(\roman*)]
+  \item \emph{One tenure.} $p$ is normal in $v$ during a single interval
+    of the execution: once $p$ leaves view $v$, by moving to a later view
+    or by crashing, it never returns to $v$.
+  \item \emph{Append only.} During that interval $L_p$ only grows, and
+    afterwards, until $p$ recovers or moves on, it is frozen.
+  \item \emph{Everything comes from it.} Every fragment of $v$ in the
+    history is a prefix of the log $p$ held at the time the fragment was
+    sent.
+\end{enumerate}
+Hence all fragments of $v$ are prefixes of one sequence, and any two
+agree wherever they overlap, which is \OneLog.
+\end{lemma}
+\begin{proof}
+(i) is clause (a): a replica's view number never decreases, including
+across recovery, where it restarts at the persisted view. (ii): while
+normal, $p$ changes its log only in \Call{Append}{} on a \msg{Request};
+\Call{InstallLog}{} runs only on entering a later view or on recovery,
+which is clause (e). (iii): a \msg{Prepare} or \msg{NewState} of $v$ is
+sent by $p$ from its own log, or by a backup from a log that \OneLog{}
+says agrees with $p$'s; a \msg{StartView} of $v$ is $p$'s log when it
+started $v$; a \dvc{} from $v$ is the log of a replica last normal in $v$,
+which by \OneLog{} agrees with $p$'s.
+\end{proof}
+
+\begin{lemma}[A new commit survives]
+\label{lem:newcommit}
+Suppose $\Inv(\Sigma)$ and replica $r$, normal in $v$ with a log that
+agrees with every fragment of $v$, sends $\msg{PrepareOk}(v, n_r, r)$.
+If for some $m \le n_r$ this completes a quorum, so that
+$\Committed(v, m, L_r[m])$ holds in $\Sigma'$, then in $\Sigma'$ every
+fragment of every started view $u > v$ that reaches $m$, and every
+non-recovering replica last normal in such a $u$, holds $L_r[m]$ at $m$.
+\end{lemma}
+\begin{proof}
+Strong induction on $u$ over the started views above $v$. Let $u$ be
+started from $V$; by the induction hypothesis every \dvc{} in $V$ from
+a view strictly between $v$ and $u$ holds $L_r[m]$ at $m$, since such a
+\dvc{} is a fragment of that view. Lemma~\ref{lem:chosen} then gives
+that the best \dvc{} of $V$ holds $L_r[m]$ at $m$. By clause (b) the
+\msg{StartView} of $u$ extends the best \dvc{}, so it holds $L_r[m]$ at
+$m$; every other fragment of $u$ and every replica last normal in $u$
+reaches $m$ by clause (b) and agrees with the \msg{StartView} by
+\OneLog.
+\end{proof}
+
+\begin{proof}[Proof of Lemma~\ref{lem:h-request}]
+The new entry is at op-number $n_r + 1$, and by clause (e) every
+fragment of $v_r$ ends at or before $n_r$, so \OneLog{} holds for the new
+fragment. The \msg{Prepare} carries $k_r$, backed by \CommitsBacked.
+Clause (e) is maintained since the primary's log grew with the fragment.
+\end{proof}
+
+\begin{proof}[Proof of Lemma~\ref{lem:h-prepare}]
+The appended entry is the fragment $\Frag(v, n-1, [e])$, which agrees
+with the replica's log by \OneLog{} for $\ell_r = v_r = v$. The commit is
+bounded by the message's $k$, which is backed in $v$ by \CommitsBacked,
+and by $n_r$, so $\Backed(\ell_r, k_r)$. The acknowledgement names
+$n_r$, which is within the primary's log by clause (e) since every entry
+of $L_r$ is a fragment of $v$; clause (f) holds for it since the replica
+is normal in $v$ and holds its log. If the acknowledgement completes a
+quorum, Lemma~\ref{lem:newcommit} gives \Survival{} for the new
+$\Committed$ facts.
+\end{proof}
+
+\begin{proof}[Proof of Lemma~\ref{lem:h-prepareok}]
+By clause (f) every member of $A_r[n]$ other than the primary sent a
+\msg{PrepareOk} for op-number $n$ in $v_r$, and the members are distinct,
+so $|A_r[n]| = Q$ gives $\QuorumAcked(v_r, m)$ for all $m \le n$. The
+entries at those op-numbers are held by $v_r$ (they are the primary's
+own fragments), so $\Committed(v_r, m, L_r[m])$ and $\Backed(v_r, n)$;
+\CommitsBacked{} follows for the new $k_r = n$, and the guard of
+\Call{CommitUpTo}{} holds since $n \le n_r$ by clause (f).
+\end{proof}
+
+\begin{proof}[Proof of Lemma~\ref{lem:h-commit}]
+\CommitsBacked{} at the message gives $\Backed(v, k)$, and $v = \ell_r$.
+\end{proof}
+
+\begin{proof}[Proof of Lemma~\ref{lem:h-getstate}]
+The sender is normal in $v$, so $\ell_r = v$ and by \OneLog{} its log
+agrees with every fragment of $v$; the segment sent is a piece of that
+log. Its commit number is backed by \CommitsBacked{} at the sender, and
+its end $n_r$ reaches the base of $v$ by clause (b).
+\end{proof}
+
+\begin{proof}[Proof of Lemma~\ref{lem:h-newstate}]
+In \transfer{} status $\ell_r = v_r = v$ by \Local, and the appended
+entries are a fragment of $v$ agreeing with its log by \OneLog. While
+catching up, the kept prefix $L_r(0{..}k_r]$ is backed in $\ell_r < v$ by
+\CommitsBacked, so by \Survival{} the fragment of $v$ holds the same
+entries at those op-numbers; and the fragment reaches $k_r$ because by
+clause (b) it reaches the base of $v$, which by Lemma~\ref{lem:chosen}
+holds every committed entry. The installed suffix is the fragment
+itself. Hence the new $L_r$ agrees with every fragment of $v$, which is
+\OneLog{} for the new $\ell_r = v$, and $\Backed(v, k_r)$ by
+\Survival{} and the message's $k$. The acknowledgement is as in
+Lemma~\ref{lem:h-prepare}.
+\end{proof}
+
+\section{View change}
+\label{sec:viewchange}
+
+\subsection{Overview}
+
+A replica that stops hearing from the primary moves to the next view and
+says so. A replica that hears $f$ others say so sends the new primary a
+\dvc{}: its log, tagged with the view the log came from. The new primary
+takes the log from the \dvc{} with the latest such view, longest on a
+tie,
+which by Lemma~\ref{lem:chosen} holds everything any earlier view
+committed, and announces it with \msg{StartView}.
+Algorithm~\ref{alg:vchelpers} gives the helpers,
+Algorithm~\ref{alg:viewchange} the handlers, and Algorithm~\ref{alg:idle}
+the idle step whose timer starts it all.
+
+\begin{algorithm}[tp]
+\caption{View-change helpers.}
+\label{alg:vchelpers}
+\begin{algorithmic}[1]
+\Procedure{StartViewChange}{$v$}
+  \State $v_r \gets v$;\ $\status_r \gets \viewchange$;\ $\mathit{catching}_r \gets \mathrm{false}$;\ $S_r, V_r \gets \emptyset$;\ $\mathit{dvcSent}_r \gets \mathrm{false}$
+  \Send{$\msg{StartViewChange}(v, \mathrm{id}_r)$}{others}
+  \State \Call{MaybeSendDoViewChange}{}
+\EndProcedure
+\Procedure{MaybeSendDoViewChange}{}
+  \If{$\status_r = \viewchange \wedge \lnot\mathit{catching}_r \wedge \lnot\mathit{dvcSent}_r \wedge |S_r| \ge f$}
+    \State $\mathit{dvcSent}_r \gets \mathrm{true}$;\ \Call{SendDoViewChange}{}
+  \EndIf
+\EndProcedure
+\Procedure{SendDoViewChange}{} \why{lem:h-svc}
+  \If{$\primary(v_r) = \mathrm{id}_r$} \Call{RecordDoViewChange}{$\mathrm{id}_r$, $(\ell_r, L_r, k_r)$}
+  \Else\ send $\msg{DoViewChange}(v_r, \mathrm{id}_r, \ell_r, L_r, n_r, k_r)$ to the primary
+  \EndIf
+\EndProcedure
+\Procedure{RecordDoViewChange}{$i$, $d$} \why{lem:h-start}
+  \State $V_r[i] \gets d$
+  \If{$|V_r| < Q$} \Return \EndIf
+  \State $\mathit{best} \gets$ the body in $V_r$ with the greatest $(\ell, |L|)$ lexicographically, ties to the highest identity \why{lem:chosen}
+  \State $k^* \gets \max\{\, k : (\ell, L, k) \in V_r \,\}$
+  \State start $v_r$ from $V_r$ \Comment{adds $(v_r, V_r)$ to $\started$}
+  \State \Call{InstallLog}{$\mathit{best}.L$};\ \Call{CommitUpTo}{$k^*$, true};\ \Call{EnterNormal}{}
+  \State $A_r \gets \{\, n \mapsto \{\mathrm{id}_r\} : k_r < n \le n_r \,\}$
+  \Send{$\msg{StartView}(v_r, L_r, n_r, k_r)$}{others}
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[tp]
+\caption{View change.}
+\label{alg:viewchange}
+\begin{algorithmic}[1]
+\On{$\msg{StartViewChange}(v, i)$} \why{lem:h-svc}
+  \If{$v < v_r$} \Return \EndIf
+  \If{$v > v_r$} \Call{StartViewChange}{$v$} \dep{app:viewchange} \EndIf
+  \If{$\status_r = \viewchange$} $S_r \gets S_r \cup \{i\}$;\ \Call{MaybeSendDoViewChange}{}
+  \ElsIf{$\status_r = \normal \wedge \mathrm{isPrimary}(r)$} send $\msg{StartView}(v_r, L_r, n_r, k_r)$ to $i$
+  \EndIf
+\On{$\msg{DoViewChange}(v, i, \ell, L, n, k)$} \why{lem:h-svc}
+  \Guard{$v \ge v_r \wedge \primary(v) = \mathrm{id}_r \wedge |L| = n$}
+  \If{$v > v_r$} \Call{StartViewChange}{$v$} \EndIf
+  \If{$\status_r = \normal$} send $\msg{StartView}(v_r, L_r, n_r, k_r)$ to $i$
+  \Else\ \Call{RecordDoViewChange}{$i$, $(\ell, L, k)$}
+  \EndIf
+\On{$\msg{StartView}(v, L, n, k)$} \why{lem:h-startview}
+  \Guard{$|L| = n \wedge (v > v_r \vee (v = v_r \wedge \status_r = \viewchange))$} \dep{app:viewchange}
+  \State $v_r \gets v$;\ \Call{InstallLog}{$L$};\ \Call{CommitUpTo}{$k$, false};\ \Call{EnterNormal}{};\ $A_r \gets \emptyset$
+  \Send{$\msg{PrepareOk}(v_r, n_r, \mathrm{id}_r)$}{the primary} \why{lem:newcommit}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[tp]
+\caption{Idle. ``The timer fires'' is decided by the replica's idle
+counters, which the environment's schedule drives
+(Assumption~\ref{asm:model}).}
+\label{alg:idle}
+\begin{algorithmic}[1]
+\On{idle} \why{lem:h-idle}
+  \If{$\status_r = \normal \wedge \mathrm{isPrimary}(r)$}
+    \Send{$\msg{Commit}(v_r, k_r)$}{others}
+    \State send $\msg{Prepare}(v_r, n, L_r[n], k_r)$ to others for each $n = k_r+1, \dots, n_r$ \dep{app:normal}
+  \ElsIf{$\status_r = \normal$}
+    \If{the timer fires} \Call{StartViewChange}{$v_r + 1$} \EndIf
+  \ElsIf{$\status_r = \recovering$}
+    \Send{$\msg{Recovery}(\mathrm{id}_r, x_r, v_r)$}{others}
+  \ElsIf{$\status_r = \transfer$}
+    \State \Call{StateTransfer}{};\ \textbf{if} the timer fires \textbf{then} \Call{StartViewChange}{$v_r + 1$}
+  \ElsIf{the timer fires}
+    \State \Call{StartViewChange}{$v_r + 1$}
+  \ElsIf{$\mathit{catching}_r$}
+    \Send{$\msg{GetState}(\mathrm{id}_r, v_r, k_r)$}{the primary}
+  \Else
+    \Send{$\msg{StartViewChange}(v_r, \mathrm{id}_r)$}{others};\ \textbf{if} $\mathit{dvcSent}_r$ \textbf{then} \Call{SendDoViewChange}{}
+  \EndIf
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Analysis}
+
+\begin{lemma}[The chosen log holds earlier commits]
+\label{lem:chosen}
+Let $\Inv(\Sigma)$. Suppose $\Holds(v, n, e)$ and a set $X$ of $Q$
+distinct identities below $N$ with $\Acked(v, n, x)$ for every $x \in X$.
+Let $u > v$, and let $V$ be $Q$ \dvc{} messages for $u$ from distinct
+replicas, each satisfying clauses (c) and (d), such that every \dvc{}
+in $V$ from a view $\ell$ with $v < \ell < u$ holds $e$ at $n$. Then the
+best \dvc{} of $V$, by $(\ell, |L|)$, holds $e$ at $n$.
+\end{lemma}
+\begin{proof}
+By Lemma~\ref{lem:quorum} some $x \in X$ sent a \dvc{} with body
+$d = (\ell, L, k)$ in $V$. By clause (d), $\ell \ge v$: $x$ either sent a \msg{PrepareOk} in
+$v$ before voting, or is the primary of $v$, which was started since it
+holds a fragment. If $\ell = v$: by clause (c) the \dvc{} covers $n$, as
+an op-number $x$ acknowledged in $v$ or, for the primary, as a fragment
+of $v$; and \OneLog(i) gives $L[n] = e$. If $\ell > v$: the hypothesis
+gives $L[n] = e$, since $\ell < u$ by clause (a). So $d$ holds $e$ at
+$n$. Let $b = (\ell_b, L_b, k_b)$ be the best \dvc{}, so
+$(\ell_b, |L_b|) \ge (\ell, |L|)$. If $\ell_b = \ell$ then
+$|L_b| \ge |L| \ge n$ and $L_b[n] = e$ by \OneLog(i), both being
+fragments of $\ell$. If $\ell_b > \ell \ge v$ then $b$ is a \dvc{} from a
+view strictly between $v$ and $u$, and the hypothesis gives
+$L_b[n] = e$.
+\end{proof}
+
+\begin{proof}[Proof of Lemma~\ref{lem:h-svc}]
+Adopting a larger view preserves clause (a). A \dvc{} carries
+$(\ell_r, L_r, k_r)$ with $\ell_r$ the view $L_r$ came from, so it is
+$\Frag(\ell_r, 0, L_r)$, agreeing with $\ell_r$'s other fragments by
+\OneLog; its $k_r$ is backed in $\ell_r$ by \CommitsBacked; it is from
+$\ell_r < v_r$ by clause (a); by clause (f) it covers every op-number
+$r$ acknowledged in $\ell_r$, which is clause (c), and if $r$ is the
+primary of $\ell_r$ it covers every fragment of $\ell_r$ by clause (e);
+and every acknowledgement $r$ made in a view $v' < v_r$ was made while
+$\ell_r \ge v'$, since $\ell_r$ only rises, which is clause (d). A
+\msg{StartView} sent by a normal primary in reply is its current log, a
+fragment of $v_r$ by clause (e).
+\end{proof}
+
+\begin{proof}[Proof of Lemma~\ref{lem:h-start}]
+The $Q$ \dvc{} messages are from distinct replicas and $v_r$ was not started
+before, as its primary was not normal in it, so clause (b) holds for the
+new $(v_r, V)$. For $u < v_r$ and $\Committed(u, n, e)$, every \dvc{} in
+$V$ from a view between $u$ and $v_r$ holds $e$ at $n$ by \Survival, so
+Lemma~\ref{lem:chosen} gives $\mathit{best}.L[n] = e$, which is
+\Survival{} for the new \msg{StartView} and for the primary itself. The
+installed log is the new view's only fragment, so \OneLog. Each $k$ in
+$V$ is backed in its \dvc{}'s $\ell < v_r$ by \CommitsBacked, and by
+\Survival{} the chosen log holds the same entries, so
+$\Backed(v_r, k^*)$; in particular $k^* \le |\mathit{best}.L|$ and
+$k_r \le |\mathit{best}.L|$, so both guards hold.
+\end{proof}
+
+\begin{proof}[Proof of Lemma~\ref{lem:h-startview}]
+The installed log is the fragment of $v$ that the \msg{StartView}
+carries, which gives \OneLog{} for $\ell_r = v$. The message's $k$ is
+backed in $v$ by \CommitsBacked, and the replica's previous $k_r$,
+backed in the old $\ell_r < v$, is held by $v$ at the same op-numbers by
+\Survival, so the new $k_r = \max$ is backed and the guard of
+\Call{InstallLog}{} holds. The guard refuses a \msg{StartView} for the
+current view in normal status, which is what clause (f) needs. The
+acknowledgement names $|L|$, within the primary's log by clause (b), and
+is as in Lemma~\ref{lem:h-prepare}.
+\end{proof}
+
+\begin{proof}[Proof of Lemma~\ref{lem:h-idle}]
+The primary's re-sent \msg{Prepare} for op-number $n$ carries $L_r[n]$,
+a fragment of $v_r$ that the history already holds by clause (e) and
+\OneLog; its \msg{Commit} carries $k_r$, backed by \CommitsBacked. A
+re-sent \dvc{} is the case of Lemma~\ref{lem:h-svc}. Starting view
+$v_r + 1$ is the case of Lemma~\ref{lem:h-svc} with $v > v_r$.
+\end{proof}
+
+\section{Recovery}
+\label{sec:recovery}
+
+\subsection{Overview}
+
+A replica that comes back with nothing but its persisted view number
+asks everyone what it missed. It waits for $Q$ answers to its nonce, one
+of them from the primary of the latest view among them, and adopts that
+primary's log. Until then it handles nothing else, by the first rule of
+Algorithm~\ref{alg:normal}. Its \msg{Recovery}
+carries the persisted view, so replicas behind it move forward first.
+Algorithm~\ref{alg:recovery} gives the handlers.
+
+\begin{algorithm}[tp]
+\caption{Recovery.}
+\label{alg:recovery}
+\begin{algorithmic}[1]
+\On{$\msg{Recovery}(i, x, v)$} \why{lem:h-recovery}
+  \If{$v > v_r \wedge \status_r \ne \recovering$} \Call{StartViewChange}{$v$}; \Return \EndIf
+  \Guard{$\status_r = \normal$}
+  \State $\mathit{st} \gets (L_r, k_r)$ if $\mathrm{isPrimary}(r)$ else $\bot$
+  \Send{$\msg{RecoveryResponse}(v_r, x, \mathrm{id}_r, \mathit{st})$}{$i$}
+\On{$\msg{RecoveryResponse}(v, x, i, \mathit{st})$} \why{lem:h-recovery}
+  \Guard{$\status_r = \recovering \wedge x = x_r$}
+  \State $R_r[i] \gets (v, \mathit{st})$
+  \If{$|R_r| < Q$} \Return \EndIf
+  \State $v^* \gets \max\{\, v' : (v', \_) \in \mathrm{ran}\, R_r \,\}$
+  \Guard{$v^* \ge v_r \wedge R_r[\primary(v^*)] = (v^*, (L, k))$ for some $L, k$}
+  \State $R_r \gets \emptyset$;\ $v_r \gets v^*$;\ \Call{InstallLog}{$L$};\ \Call{CommitUpTo}{$k$, false};\ \Call{EnterNormal}{}
+\On{recover with persisted view $v$ and fresh nonce $x$} \whydep{lem:h-recover}{app:recovery}
+  \State reset to the initial state, then $\status_r \gets \recovering$;\ $v_r, \ell_r \gets v$;\ $x_r \gets x$
+  \Send{$\msg{Recovery}(\mathrm{id}_r, x, v)$}{others}
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Analysis}
+
+\begin{proof}[Proof of Lemma~\ref{lem:h-recovery}]
+A recovery state is the normal primary's log in $v_r$, a fragment of
+$v_r$ by clause (e), which also gives that it covers every
+acknowledgement in $v_r$; it answers a \msg{Recovery} with the nonce it
+carries; so clause (g). Installing it at the recovering replica makes
+$L_r$ that fragment, so \OneLog{} for $\ell_r = v^*$, and $k$ is backed
+by \CommitsBacked{} at the message; the guard of \Call{InstallLog}{}
+holds since the recovering replica has $k_r = 0$. The recovering replica
+held nothing before, so nothing is lost, and $v^* \ge v_r$ keeps clause
+(a). A \msg{Recovery} carrying $v > v_r$ moves the receiver to $v$,
+which is Lemma~\ref{lem:h-svc}.
+\end{proof}
+
+\begin{proof}[Proof of Lemma~\ref{lem:h-recover}]
+By Assumption~\ref{asm:model}(iii) the persisted view is the replica's
+$v_r$ in $\Sigma$, and by clause (a) in $\Sigma$ no message it sent is
+ahead of that, so clause (a) holds after the reset. \Local{} holds for a
+recovering replica with an empty log. By Assumption~\ref{asm:model}(iv)
+no \msg{RecoveryResponse} answers the new nonce, so clause (g) is
+vacuous for it. Every other clause about the replica is either vacuous
+for \recovering{} status or unchanged.
+\end{proof}
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+Viewstamped Replication as published in 2012 is not safe as written, in
+two places that lose committed data and one that repeats an operation.
+This paper gives the corrected protocol as pseudocode and proves it safe
+through an inductive invariant over the history of every message ever
+sent, checked in Lean~4. The invariant is the contribution: it is the
+precise form of the paper's informal correctness argument, and each
+correction to the paper corresponds to a clause of it that the published
+version of the protocol would make false. What the proof does not cover
+is what clients see, which needs a model of clients and their
+retransmissions, and liveness, which needs a fairness assumption and a
+different kind of argument.
+
+\subsection*{AI disclosure}
+This draft was prepared with Claude Code, an AI coding agent, under the
+author's direction. The agent read the cited papers and the mechanised
+development and drafted the text, the pseudocode of
+Sections~\ref{sec:normal} to~\ref{sec:recovery}, and the proof sketches;
+the agent also took part in writing the Lean development. What has been
+checked: the Lean proof, by the Lean kernel, with the axioms stated in
+Appendix~\ref{app:lean}. What has not: no human has yet checked, line by line, that the
+pseudocode and definitions printed in this paper are the model the Lean
+proves, or that the hand proofs follow the Lean. The correspondence in
+Appendix~\ref{app:lean} is the agent's. The author takes responsibility
+for the whole.
+
+\bibliography{references}
+
+\appendix
+
+\section{Viewstamped Replication}
+\label{app:vr}
+
+This appendix presents the protocol of \citet{liskov2012vr} as
+published, and, where Sections~\ref{sec:normal} to~\ref{sec:recovery} correct it, says
+why. Section numbers in parentheses refer to that paper.
+
+\subsection{Replicas, views, and quorums}
+\label{app:replicas}
+
+A cluster has $N = 2f+1$ replicas with identities $0, \dots, N-1$ and
+tolerates $f$ crashes; a quorum is $Q = f+1$ (\S2.2). The cluster moves
+through numbered \emph{views}. The primary of view $v$ is replica
+$\primary(v) = v \bmod N$; there is no election, only a change of view.
+
+Every replica holds a \emph{view number} $v_r$, a \emph{status} that is
+normal, view-change, state-transfer, or recovering, a \emph{log} $L_r$ of
+operations, a \emph{commit number} $k_r$ giving the length of the
+committed prefix of the log, and the \emph{last normal view} $\ell_r$,
+the most recent view in which its status was normal (Figure~2 of the
+paper). Entries are numbered by \emph{op-number} from $1$. A \emph{client table} records, per client, the number of its
+latest request and, once executed, the reply, so that a retransmitted
+request is answered from the table rather than run again.
+
+The paper's replica also has a disk it never writes to. We add one
+write: $v_r$ is persisted after every step, before anything the step
+produced is sent, and survives a crash. The reason is in
+Section~\ref{app:recovery}.
+
+\subsection{Normal operation}
+\label{app:normal}
+
+A client sends \msg{Request} to the primary (\S4.1). The primary appends
+the operation to its log, assigns it the next op number $n$, records its
+own acknowledgement, and sends \msg{Prepare}$(v, n, e, k)$ to the backups,
+carrying the entry $e$ and the primary's commit number $k$. A backup
+accepts \msg{Prepare} only in view $v_r$, only in normal status, and only
+in op-number order; it appends, commits up to $\min(k, |L_r|)$, and
+replies \msg{PrepareOk}$(v, |L_r|, r)$, which acknowledges every op up to
+its log length. When the primary has $Q$ acknowledgements for op $n$,
+counting its own, it commits every op up to $n$ in order, applying each to
+the state machine and replying to its client. When idle it sends
+\msg{Commit}$(v, k)$ so that backups learn of commits without a new
+request.
+
+\begin{departure}{a backup that adopts a lower commit number executes operations twice}
+The paper's backups
+set their commit number from whatever message arrives. But a
+\msg{StartView} can legitimately carry a commit number lower than the
+receiver's, since the new primary's log is chosen by last normal view and
+length and its commit number is the maximum among the \msg{DoViewChange}
+messages it chose from, which may be
+behind a backup that committed more in the old view. A backup that
+adopts the lower number re-executes the operations between on the next
+\msg{Prepare}. We make every commit $k_r := \max(k_r, k)$: the commit
+number never decreases, from any message.
+\end{departure}
+
+\begin{departure}{a lost message is never re-sent, so the cluster stalls}
+The paper ignores re-sending. The
+primary re-sends every uncommitted \msg{Prepare} on each idle period
+along with \msg{Commit}, and a replica waiting for \msg{NewState} or for
+a view change re-sends its request on each idle period. Without this a
+single lost message stalls the cluster.
+\end{departure}
+
+\subsection{View change}
+\label{app:viewchange}
+
+A backup that does not hear from the primary within a timeout advances to
+view $v+1$, sets its status to view-change, and sends
+\msg{StartViewChange}$(v+1, r)$ to every other replica (\S4.2). A replica
+that receives \msg{StartViewChange} for a view above its own moves to
+that view and does the same. On $f$ such messages from other replicas for
+its current view, a replica sends
+\msg{DoViewChange}$(v, r, \ell_r, L_r, |L_r|, k_r)$ to $\primary(v)$,
+carrying its log and the view that log is from. On $Q$ of them the new
+primary takes the log of the one with the greatest $(\ell, |L|)$ in
+lexicographic order, sets its commit number to the greatest $k$ among
+them, commits up to it, becomes normal in $v$
+with $\ell = v$, and sends \msg{StartView}$(v, L, |L|, k)$ to the others.
+A backup that receives \msg{StartView} installs the log, commits up to
+$k$ subject to the rule above, becomes normal in $v$, and acknowledges
+its whole log with a \msg{PrepareOk}.
+
+The paper's argument (\S8.1) is that a committed op is in $Q$ logs, a
+view change reads $Q$ logs, and the two quorums intersect; and that a
+replica stops accepting \msg{Prepare} from the old view the moment it
+enters view-change status, so the old primary cannot commit anything the
+new primary does not see.
+
+\begin{departure}{read as an increment, ``advances its view-number'' lets a primary count \dvc{} messages sent for different views together}
+\S4.2 says a replica that
+receives \msg{StartViewChange} for a later view ``advances its
+view-number'', which can be read as adopting the received view or as
+incrementing by one. Under the increment reading a primary can hold
+\msg{DoViewChange} messages for views $v$, $v+1$, and $v+2$ at once and
+count them together, which builds a log from messages that were not all
+for the same view. We
+adopt the received view number and increment only on a timeout.
+\end{departure}
+
+\begin{departure}{a StartView for the current view would discard entries the replica has acknowledged}
+A replica in
+normal status in view $v$ must not accept a \msg{StartView} for $v$. Such
+a message is one it has already acted on, or a duplicate, and installing
+its log would discard entries the replica has since accepted and
+acknowledged. We accept a \msg{StartView} for the current view only in
+view-change status, and for a later view always.
+\end{departure}
+
+\begin{departure}{a view-change backoff reset on entering the view lets the previous primary start the next view change}
+A view change that
+fails, because the new primary is also down, is followed by another with
+a longer timeout. We double the timeout per failed attempt. The backoff
+must not be reset on entering normal status: if it is, the previous
+primary, freshly normal, times out first in the next view and starts a
+change that the others, still backing off, then join, round the ring
+without end. It is forgotten only after the new view has been stable for
+a full primary timeout.
+\end{departure}
+
+\subsection{State transfer}
+\label{app:transfer}
+
+A replica that receives a \msg{Prepare} past the end of its log, or a
+\msg{Commit} past its log, has missed messages. It sends
+\msg{GetState}$(r, v, |L_r|)$ to the primary and receives
+\msg{NewState}$(v, L, a, b, k)$ with the entries with op-numbers $a+1$
+to $b$, which it appends (\S5.2). A replica that learns of a later view than its own
+from a normal-case message is in a different situation: the uncommitted
+suffix of its log belongs to a view that has ended and may have been
+superseded. The paper says it should ``set its op-number to its
+commit-number and remove all entries after this from its log'' before
+asking for state.
+
+\begin{departure}{truncating the log before state transfer discards an entry the replica has acknowledged}
+Suppose backup $r$ has acknowledged
+op $n$ in view $v$, so that op $n$ may be committed on the strength of
+$r$'s acknowledgement. Before $r$ learns of the commit it hears of view
+$v+1$, truncates to its commit number, and loses op $n$. The change to
+$v+1$ then fails and a change to $v+2$ follows, in which $r$ sends a
+\msg{DoViewChange} with a log that no longer has op $n$. The quorum that
+acknowledged op $n$ and the quorum of \msg{DoViewChange} senders in $v+2$
+may intersect only in $r$, and then op $n$, which was committed, is gone.
+The argument of \S8.1 needs every replica's \msg{DoViewChange} to cover
+every op it has acknowledged, and truncation breaks
+exactly that. We have a replica catching up with a later view keep its
+log, enter view-change status marked as catching up, ask for the log
+after its \emph{commit number}, and on \msg{NewState} replace only the
+uncommitted suffix. If the new view's log has op $n$, $r$ keeps it; if
+not, the new view was chosen from a quorum that did not need $r$'s
+acknowledgement, and op $n$ was never committed.
+\end{departure}
+
+\subsection{Recovery}
+\label{app:recovery}
+
+A replica that restarts with no memory sets its status to recovering and
+sends \msg{Recovery}$(r, x, v)$ with a fresh nonce $x$ (\S4.3). Normal
+replicas answer \msg{RecoveryResponse} with their view number, and the
+primary of that view includes its log and commit number. On $Q$
+responses for its nonce, one of them from the primary of the latest view
+among them, the replica adopts that primary's state, becomes normal, and
+rejoins. While recovering it takes part in nothing else.
+
+The paper argues (\S8.2) that this is safe without a disk because of the
+\msg{StartViewChange} round: a replica that has sent \msg{DoViewChange}
+did so only after $f$ others announced the view, so if it crashes and
+recovers, those others are still in the new view or beyond and it will
+recover into it. The round is offered as the equivalent of the write of
+the view id to stable storage that the original protocol made at the end
+of every view change \citep[\S4]{oki1988vr}.
+
+\begin{departure}{diskless recovery lets a replica forget that it started a view change}
+The round moves the
+problem one message earlier. A replica can forget it sent
+\msg{StartViewChange} as easily as it can forget a \msg{DoViewChange}.
+With three replicas: the replica that will be the new primary sends
+\msg{StartViewChange}, crashes before anyone receives it, and recovers in
+the old view, because both other replicas are still there and answer
+with it. The delayed \msg{StartViewChange} then arrives at the third
+replica, which advances its view and sends its own \msg{StartViewChange}
+and, now having $f$ of them, a \msg{DoViewChange} back. The recovered
+replica, which has no memory of wanting the new view, receives both,
+counts them, and completes the view change. The old primary knows nothing
+of this and keeps committing. We persist $v_r$ after every step; a
+recovered replica starts in that view, and its
+\msg{Recovery} message carries it so that the others move forward on
+receipt. This is what the 1988 protocol did with its view id, and what
+the 2012 paper gave up to need no disk; it turns out to be the one write
+that cannot be given up.
+\end{departure}
+
+\subsection{What is left out}
+
+Reconfiguration (\S7) is out of scope; a lost machine is replaced by one
+that recovers into the same replica identity. Client recovery (\S4.5) is
+the client's problem. The optimisations of \S5 and \S6, checkpoints,
+witnesses, batching, and reads at the primary, are not treated; the
+recovery protocol sends the whole log.
+
+\section{The mechanised proof}
+\label{app:lean}
+
+The proof of Theorem~\ref{thm:log} is checked in Lean~4. This appendix
+states the mechanised theorem, its assumptions, and how the paper's
+definitions and lemmas map onto it. Names in \texttt{monospace} are Lean
+identifiers.
+
+\subsection{The theorem}
+
+\begin{verbatim}
+theorem safety (m : Machine Op Output St) (sm : St) (config : Config)
+    (htwo : 2 <= config.replicaCount)
+    (s : System Op Output St) (h : Reachable m sm config s) :
+    NoPanic s /\ PrefixAgreement s /\ Durability s
+\end{verbatim}
+
+together with
+\texttt{commitBounded\_of\_reachable} and \texttt{sentWF\_of\_reachable},
+which give commit boundedness and \WellFormed{} for every reachable
+cluster. The three depend on the axioms \texttt{propext},
+\texttt{Quot.sound}, and \texttt{Classical.choice} only, with no
+\texttt{sorry}. \texttt{NoPanic} is the last item of clause (h): no
+internal guard of \Call{InstallLog}{} or \Call{CommitUpTo}{} has failed.
+
+\texttt{Reachable} is Definition~\ref{def:reachable}: the closure of the
+initial cluster under the four steps of Definition~\ref{def:step}, where a
+\emph{recover} step requires \texttt{NonceFresh}, that no \msg{Recovery}
+in \texttt{sent} carries the nonce. This and \texttt{2 <= replicaCount}
+are the only hypotheses; they are Assumption~\ref{asm:model}(i) and (iv).
+Assumption~\ref{asm:model}(iii) is built into the \emph{recover} step,
+which restarts the replica with the view number it held.
+Assumption~\ref{asm:model}(ii) is built into the model of time: the
+handlers keep the protocol's idle counters, and the environment chooses
+which replica idles when, so every schedule is a reachable execution.
+
+The model's logs are indexed from zero. Op-number $n$ of this paper is
+list index $n - 1$ there, and a commit number $k$ means indices $0$ to
+$k - 1$; the definitions below are stated in those terms.
+
+\subsection{The model and its correspondence to the code}
+
+The model is a twin of an implementation: one Lean definition per
+function of the implementation, with the same control flow, sending to
+an outbox and appending replies to a list. Where the implementation
+checks a guard inside \Call{InstallLog}{} or \Call{CommitUpTo}{}, the
+model sets a flag instead of stopping, so every handler is total and
+``no guard fails'' is a property to prove, \texttt{NoPanic}. The model
+is held to the implementation by differential testing rather than by
+translation: a generator produces seeded traces of cluster steps, both
+sides replay each trace and print every replica's status, view, commit
+number, log, and applied operations, and every message and reply sent,
+after every step, and the test fails on the first differing line. Every
+executable twin of an invariant clause is evaluated on the same traces,
+which is how a candidate clause was tried before it was proved.
+
+What the mechanised proof does not cover is what the paper does not
+claim: what clients see, since the model has no clients and requests
+arrive from the environment, and liveness.
+
+\subsection{Correspondence}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{9.2cm}@{}}
+\toprule
+This paper & Lean \\
+\midrule
+Definitions~\ref{def:config} to~\ref{def:messages} & \texttt{Config}, \texttt{Replica}, \texttt{Message} \\
+Definition~\ref{def:cluster}, \ref{def:step} & \texttt{System}, \texttt{Step}, \texttt{System.step} \\
+Lemma~\ref{lem:quorum} & \texttt{Config.quorum\_intersect}, \texttt{filter\_mem\_length} \\
+Definition~\ref{def:dvcof} & \texttt{DvcOf} \\
+Definition~\ref{def:frag}, Holds & \texttt{Frag}, \texttt{Holds} \\
+Acknowledged, Committed, Backed & \texttt{Acked}, \texttt{QuorumAcked}, \texttt{Committed}, \texttt{Backed}, \texttt{MsgBacked} \\
+\Local & \texttt{LocalInv}, lifted as \texttt{AllLocal} \\
+\WellFormed & \texttt{WF}, lifted as \texttt{SentWF} \\
+\OneLog & \texttt{OneLogPerView} \\
+\CommitsBacked & \texttt{CommitsBacked} \\
+\Survival & \texttt{Survives} \\
+$\Inv$, Definition~\ref{def:inv} & \texttt{Inv} \\
+Lemma~\ref{lem:mono} & \texttt{Frag.mono}, \texttt{Holds.mono}, \texttt{Committed.mono}, \texttt{Backed.mono} \\
+Lemma~\ref{lem:local} & \texttt{LocalInv.onMessage}, \texttt{.onIdle}, \texttt{.recover}; \texttt{OutboxWF.*} \\
+Lemma~\ref{lem:h-request} & \texttt{Inv.onRequest} \\
+Lemma~\ref{lem:h-prepare} & \texttt{Inv.onPrepare} \\
+Lemma~\ref{lem:h-prepareok} & \texttt{Inv.onPrepareOk} \\
+Lemma~\ref{lem:h-commit} & \texttt{Inv.onCommit} \\
+Lemma~\ref{lem:h-getstate} & \texttt{Inv.onGetState} \\
+Lemma~\ref{lem:h-newstate} & \texttt{Inv.onNewState} \\
+Lemma~\ref{lem:h-svc} & \texttt{Inv.onStartViewChange}, \texttt{.onDoViewChange}, \texttt{.startViewChange}, \texttt{.sendDoViewChange} \\
+Lemma~\ref{lem:h-start} & \texttt{Inv.recordDoViewChange} \\
+Lemma~\ref{lem:h-startview} & \texttt{Inv.onStartView} \\
+Lemma~\ref{lem:h-recovery} & \texttt{Inv.onRecovery}, \texttt{Inv.onRecoveryResponse} \\
+Lemma~\ref{lem:h-recover} & \texttt{Inv.recover} \\
+Lemma~\ref{lem:h-idle} & \texttt{Inv.onIdle} \\
+Lemma~\ref{lem:init} & \texttt{Inv.init} \\
+Theorem~\ref{thm:inductive} & \texttt{Inv.step}, \texttt{inv\_of\_reachable} \\
+Lemma~\ref{lem:committed} & \texttt{Inv.committed\_entry} \\
+Lemma~\ref{lem:later} & \texttt{Inv.survives\_holds} \\
+Lemma~\ref{lem:acker} & \texttt{Inv.holds\_of\_acked} \\
+Lemma~\ref{lem:chosen} & \texttt{Inv.bestHolds} \\
+Lemma~\ref{lem:newcommit} & \texttt{Inv.viewHolds\_of\_newAck} \\
+Theorem~\ref{thm:log}(i) & \texttt{Inv.prefixAgreement} \\
+Theorem~\ref{thm:log}(ii) & \texttt{Inv.durability} \\
+Theorem~\ref{thm:log}(iii) & \texttt{commitBounded\_of\_reachable} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Lemma~\ref{lem:primary}, why views agree, has no single counterpart: it
+is the explanation of \OneLog, whose preservation is one obligation of
+each handler lemma above. The clauses of Definition~\ref{def:inv} are
+the following fields of \texttt{Inv}.
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{4.6cm}p{9.6cm}@{}}
+\toprule
+Clause & Lean fields \\
+\midrule
+(a) Views only rise & \texttt{MessagesBelowView}, \texttt{DvcBelowView}, \texttt{ViewChangeBehind}, \texttt{DvcBehind}, \texttt{PrimaryStartedNormal} \\
+(b) Chosen from a quorum, once & \texttt{StartViewChosen}, \texttt{StartedOnce}, \texttt{ViewExtendsBase} \\
+(c) DoViewChanges cover acknowledgements & \texttt{DvcCoversAcks}, \texttt{DvcPrimaryCovers} \\
+(d) DoViewChanges come after acknowledgements & \texttt{DvcAfterAcks}, \texttt{DvcAfterOwnView} \\
+(e) Primary is longest & \texttt{PrimaryLongest} \\
+(f) Acknowledgements are kept & \texttt{AcksHold}, \texttt{AcksCurrent}, \texttt{AcksStarted} \\
+(g) Recovery covers acknowledgements & \texttt{RecoveryCoversAcks}, \texttt{RecoveryResponseNonce}, \texttt{RecoveryStateFromPrimary}, \texttt{RecoveryResponseNotSelf}, \texttt{RecordedRRs} \\
+(h) Bookkeeping & \texttt{Ids}, \texttt{ReplicaCount}, \texttt{SenderIds}, \texttt{StartedIds}, \texttt{CatchingUpNotPrimary}, \texttt{TransferNotPrimary}, \texttt{PrimaryToOthers}, \texttt{Covered}, \texttt{ReplicasAgree}, \texttt{StartedViews}, \texttt{StartViewChangePos}, \texttt{RecordedDvcs}, \texttt{Drained}, \texttt{Clean}, \texttt{TwoReplicas}, \texttt{NoPanic} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{How preservation is organised}
+
+A step at one replica produces a new replica, a list of messages, and at
+most one started view; \texttt{System.after} is the cluster with those
+applied. \texttt{StepOK} collects one obligation per field of
+\texttt{Inv}, each about the new replica, the new messages, and the new
+started view only; facts about old messages and untouched replicas
+transfer by Lemma~\ref{lem:mono}, and \texttt{Inv.after} turns
+\texttt{StepOK} into \texttt{Inv} of the new cluster. A handler is a
+chain of helpers, and its proof follows the chain through the cluster as
+it will be once the replica's outbox is handed over
+(\texttt{System.drainOf}), one reusable link per kind of change:
+replacing a replica while keeping its log, installing a log, appending an
+entry, committing up to a backed bound, sending each kind of message.
+
+The Survival obligation of a new \texttt{Committed} fact is discharged
+where the paragraph ``Where a commit is born'' in
+Section~\ref{sec:framework} says: in \texttt{Inv.onPrepare},
+\texttt{Inv.onNewState}, and \texttt{Inv.onStartView}. The lemma used
+there, \texttt{Inv.viewHolds\_of\_newAck}, is a strong induction on the
+started view, and each step of it is \texttt{Inv.bestHolds}. The same lemma discharges the
+guards of \Call{InstallLog}{} and \Call{CommitUpTo}{} when a view is
+started (\texttt{Inv.recordDoViewChange}), when a \msg{StartView} is
+adopted (\texttt{Inv.onStartView}), and when a catching-up replica takes
+a \msg{NewState} (\texttt{Inv.onNewState}).
+
+Every field of \texttt{Inv} also has an executable twin that is evaluated
+on the states of randomly generated executions of the model, and every
+clause was tried that way before it was proved. Several of the clauses in
+(a) to (h) were found by that check failing, or by a preservation proof
+not closing, rather than written down in advance; that is the usual way
+an inductive invariant is arrived at, and the reason the paper presents
+$\Inv$ as the contribution.
+
+\end{document}
