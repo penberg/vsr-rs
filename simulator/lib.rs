@@ -256,7 +256,7 @@ impl Options {
     }
 
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.replica_count >= 1, "replica_count must be at least 1");
+        ensure!(self.replica_count >= 3, "replica_count must be at least 3");
         ensure!(self.client_count >= 1, "client_count must be at least 1");
         ensure!(self.requests_max >= 1, "requests_max must be at least 1");
         ensure!(

@@ -19,6 +19,10 @@
 //! replica can forget that it asked for a view change and let two views run
 //! at once, as shown by Michael et al. in "Recovering Shared Objects Without
 //! Stable Storage".
+//!
+//! A cluster needs at least three replicas. Recovery takes a quorum of
+//! answers from the others, and with fewer than three a replica that lost
+//! its memory has no such quorum to ask, so the cluster is stuck with it.
 
 use log::trace;
 use std::{
@@ -290,6 +294,10 @@ pub struct Client<Op> {
 
 impl<Op: Clone + Debug> Client<Op> {
     pub fn new(client_id: ClientID, config: Config) -> Client<Op> {
+        assert!(
+            config.replicas().len() >= 3,
+            "a cluster needs at least three replicas"
+        );
         Client {
             config,
             client_id,
@@ -476,6 +484,10 @@ pub struct Replica<SM: StateMachine> {
 
 impl<SM: StateMachine> Replica<SM> {
     pub fn new(self_id: ReplicaID, config: Config, state_machine: SM) -> Replica<SM> {
+        assert!(
+            config.replicas().len() >= 3,
+            "a cluster needs at least three replicas"
+        );
         Replica {
             self_id,
             config,
