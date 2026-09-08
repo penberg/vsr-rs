@@ -662,3 +662,17 @@ fn test_view_change_does_not_start_the_next() {
         "the cluster never settled: replicas are in views {views:?}"
     );
 }
+
+/// Regression test case for https://github.com/penberg/vsr-rs/issues/14
+#[test]
+#[should_panic(expected = "at least three replicas")]
+fn test_one_replica_is_rejected() {
+    Cluster::new(1);
+}
+
+/// Regression test case for https://github.com/penberg/vsr-rs/issues/14
+#[test]
+#[should_panic(expected = "at least three replicas")]
+fn test_two_replicas_are_rejected() {
+    Cluster::new(2);
+}

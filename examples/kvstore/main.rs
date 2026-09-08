@@ -677,6 +677,9 @@ fn parse_args() -> Result<Args, String> {
         replicas: replicas.ok_or(usage)?,
         listen: listen.ok_or(usage)?,
     };
+    if args.replicas.len() < 3 {
+        return Err("--replicas needs at least three addresses".to_string());
+    }
     if args.id >= args.replicas.len() {
         return Err("--id must index into --replicas".to_string());
     }
