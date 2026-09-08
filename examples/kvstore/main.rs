@@ -19,7 +19,7 @@ use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender, TrySendError};
 use std::thread;
 use std::time::{Duration, Instant};
 use vsr_rs::{
@@ -33,6 +33,8 @@ const TICK: Duration = Duration::from_millis(100);
 const CLIENT_RESEND_TICKS: u64 = 5;
 /// Idle periods without hearing from the primary before a view change.
 const PRIMARY_TIMEOUT: usize = 5;
+/// Frames queued for one node before further ones are dropped.
+const OUTBOX_FRAMES: usize = 1024;
 
 // ---------------------------------------------------------------------------
 // State machine
@@ -337,59 +339,87 @@ fn decode(line: &str) -> Result<Frame, String> {
 // ---------------------------------------------------------------------------
 // Networking between nodes
 
-/// Sends frames to other nodes, connecting on demand. A node that cannot be
-/// reached just loses the message; the protocol re-sends what matters.
-fn run_sender(
+/// Frames on their way to the other nodes: one queue and sender thread per
+/// node, so a node that stops reading holds up only its own frames.
+struct Outboxes {
     self_id: ReplicaID,
-    addresses: Vec<SocketAddr>,
-    frames: Receiver<(ReplicaID, Frame)>,
     events: Sender<Event>,
-) {
-    let mut streams: HashMap<ReplicaID, TcpStream> = HashMap::new();
-    let mut last_failure: HashMap<ReplicaID, Instant> = HashMap::new();
-    for (dst, frame) in frames {
-        if dst == self_id {
-            // Our own messages, for example a client request when we are
-            // the primary, go straight to our event loop.
+    queues: Vec<SyncSender<Frame>>,
+}
+
+impl Outboxes {
+    fn new(self_id: ReplicaID, addresses: &[SocketAddr], events: Sender<Event>) -> Outboxes {
+        let queues = addresses
+            .iter()
+            .enumerate()
+            .map(|(dst, &address)| {
+                let (queue, frames) = sync_channel(OUTBOX_FRAMES);
+                if dst != self_id {
+                    thread::spawn(move || run_sender(dst, address, frames));
+                }
+                queue
+            })
+            .collect();
+        Outboxes {
+            self_id,
+            events,
+            queues,
+        }
+    }
+
+    /// A full queue drops the frame: the node is not keeping up, and the
+    /// protocol re-sends what matters.
+    fn send(&self, dst: ReplicaID, frame: Frame) {
+        if dst == self.self_id {
             let event = match frame {
                 Frame::Message(message) => Event::Message(message),
                 Frame::Reply(reply) => Event::Reply(reply),
             };
-            let _ = events.send(event);
-            continue;
+            let _ = self.events.send(event);
+            return;
         }
-        let stream = match streams.entry(dst) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                if last_failure
-                    .get(&dst)
-                    .is_some_and(|at| at.elapsed() < Duration::from_millis(500))
-                {
+        if let Err(TrySendError::Full(_)) = self.queues[dst].try_send(frame) {
+            debug!("outbox to node {dst} is full, dropping a frame");
+        }
+    }
+}
+
+/// Sends the frames queued for one node, connecting on demand. A node that
+/// cannot be reached just loses the message; the protocol re-sends what
+/// matters.
+fn run_sender(dst: ReplicaID, address: SocketAddr, frames: Receiver<Frame>) {
+    let mut stream: Option<TcpStream> = None;
+    let mut last_failure: Option<Instant> = None;
+    for frame in frames {
+        let connected = match stream.as_mut() {
+            Some(stream) => stream,
+            None => {
+                if last_failure.is_some_and(|at| at.elapsed() < Duration::from_millis(500)) {
                     continue;
                 }
-                match TcpStream::connect_timeout(&addresses[dst], Duration::from_millis(200)) {
-                    Ok(stream) => {
-                        info!("connected to node {dst} at {}", addresses[dst]);
-                        entry.insert(stream)
+                match TcpStream::connect_timeout(&address, Duration::from_millis(200)) {
+                    Ok(connected) => {
+                        info!("connected to node {dst} at {address}");
+                        stream.insert(connected)
                     }
                     Err(err) => {
                         debug!("node {dst} unreachable: {err}");
-                        last_failure.insert(dst, Instant::now());
+                        last_failure = Some(Instant::now());
                         continue;
                     }
                 }
             }
         };
         let line = encode(&frame);
-        if let Err(err) = stream
+        if let Err(err) = connected
             .write_all(line.as_bytes())
-            .and_then(|_| stream.write_all(b"\n"))
+            .and_then(|_| connected.write_all(b"\n"))
         {
             // Drop the stream but do not start the backoff: the peer was
             // reachable a moment ago, so the next frame retries the connect
             // right away. If that connect fails, the backoff starts then.
             warn!("lost connection to node {dst}: {err}");
-            streams.remove(&dst);
+            stream = None;
         }
     }
 }
@@ -592,28 +622,28 @@ fn deliver_reply(connections: &mut HashMap<u64, Connection>, reply: KvReply) {
 }
 
 /// Sends out everything the replica and the clients produced: protocol
-/// messages to the sender thread, and replies to the node that owns the
+/// messages to the sender threads, and replies to the node that owns the
 /// client connection, which may be this one.
 fn flush(
     node_id: ReplicaID,
     replica: &mut Replica<Store>,
     connections: &mut HashMap<u64, Connection>,
-    frames: &Sender<(ReplicaID, Frame)>,
+    outboxes: &Outboxes,
 ) {
     for (dst, message) in replica.drain_messages() {
-        let _ = frames.send((dst, Frame::Message(message)));
+        outboxes.send(dst, Frame::Message(message));
     }
     for reply in replica.drain_replies() {
         let owner = node_of(reply.client_id);
         if owner == node_id {
             deliver_reply(connections, reply);
         } else {
-            let _ = frames.send((owner, Frame::Reply(reply)));
+            outboxes.send(owner, Frame::Reply(reply));
         }
     }
     for connection in connections.values_mut() {
         for (dst, message) in connection.client.drain() {
-            let _ = frames.send((dst, Frame::Message(message)));
+            outboxes.send(dst, Frame::Message(message));
         }
     }
 }
@@ -703,12 +733,7 @@ fn main() {
     config.set_primary_timeout(PRIMARY_TIMEOUT);
 
     let (events_tx, events_rx) = channel::<Event>();
-    let (frames_tx, frames_rx) = channel::<(ReplicaID, Frame)>();
-
-    {
-        let (self_id, addresses, events) = (args.id, args.replicas.clone(), events_tx.clone());
-        thread::spawn(move || run_sender(self_id, addresses, frames_rx, events));
-    }
+    let outboxes = Outboxes::new(args.id, &args.replicas, events_tx.clone());
     {
         let listener = TcpListener::bind(args.replicas[args.id]).unwrap_or_else(|err| {
             eprintln!("cannot listen on {}: {err}", args.replicas[args.id]);
@@ -806,7 +831,7 @@ fn main() {
             }
         }
         persist_view(&view_path, &mut persisted_view, replica.view_number());
-        flush(args.id, &mut replica, &mut connections, &frames_tx);
+        flush(args.id, &mut replica, &mut connections, &outboxes);
         if replica.view_number() != view {
             view = replica.view_number();
             println!(
@@ -941,5 +966,44 @@ mod tests {
             Ok(_) => panic!("unexpected second event"),
             Err(err) => panic!("event channel failed: {err}"),
         }
+    }
+
+    /// Regression test case for https://github.com/penberg/vsr-rs/issues/15
+    #[test]
+    fn stalled_peer_does_not_block_other_peers() {
+        let stalled = TcpListener::bind("127.0.0.1:0").unwrap();
+        let healthy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addresses = vec![
+            stalled.local_addr().unwrap(),
+            healthy.local_addr().unwrap(),
+            "127.0.0.1:1".parse().unwrap(),
+        ];
+        let (events, _events_rx) = channel();
+        let outboxes = Outboxes::new(2, &addresses, events);
+        // Accept the stalled peer's connection but never read from it.
+        let _stalled_stream = thread::spawn(move || stalled.accept().unwrap().0);
+
+        for _ in 0..16 {
+            outboxes.send(0, prepare_put(&"v".repeat(4 << 20)));
+        }
+        outboxes.send(
+            1,
+            Frame::Message(Message::Commit {
+                view_number: 0,
+                commit_number: 0,
+            }),
+        );
+
+        let (line_tx, line_rx) = channel();
+        thread::spawn(move || {
+            let (stream, _) = healthy.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).unwrap();
+            line_tx.send(line).unwrap();
+        });
+        let line = line_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("healthy peer got nothing");
+        assert_eq!(line, "COMMIT 0 0\n");
     }
 }
