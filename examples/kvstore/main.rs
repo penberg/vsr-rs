@@ -736,9 +736,13 @@ fn main() {
     // in a small file; if the file exists this node has run before, and it
     // comes back through recovery rather than as a brand new replica.
     let view_path = format!("kvstore-node-{}.view", args.id);
-    let mut persisted_view = std::fs::read_to_string(&view_path)
-        .ok()
-        .and_then(|s| s.trim().parse::<usize>().ok());
+    let mut persisted_view = match load_view(&view_path) {
+        Ok(view) => view,
+        Err(err) => {
+            eprintln!("cannot load view from {view_path}: {err}");
+            std::process::exit(1);
+        }
+    };
     let mut replica = match persisted_view {
         Some(view) => {
             let nonce = std::time::SystemTime::now()
@@ -815,6 +819,20 @@ fn main() {
     }
 }
 
+fn load_view(path: &str) -> std::io::Result<Option<usize>> {
+    use std::io::{Error, ErrorKind};
+    match std::fs::read_to_string(path) {
+        Ok(contents) => contents.trim().parse().map(Some).map_err(|_| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("not a view number: {contents:?}"),
+            )
+        }),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -841,6 +859,35 @@ mod tests {
         let (events, received) = channel();
         thread::spawn(move || run_peer_acceptor(listener, events));
         (address, received)
+    }
+
+    #[test]
+    fn load_view_reads_a_missing_file_as_first_startup() {
+        assert!(matches!(load_view(&view_file("missing", None)), Ok(None)));
+    }
+
+    #[test]
+    fn load_view_reads_a_persisted_view() {
+        let path = view_file("valid", Some("3\n"));
+        assert!(matches!(load_view(&path), Ok(Some(3))));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// Regression test case for https://github.com/penberg/vsr-rs/issues/13
+    #[test]
+    fn load_view_refuses_an_invalid_view_file() {
+        let path = view_file("invalid", Some("ff\n"));
+        assert!(load_view(&path).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fn view_file(name: &str, contents: Option<&str>) -> String {
+        let path = std::env::temp_dir().join(format!("vsr-rs-{}-{name}.view", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        if let Some(contents) = contents {
+            std::fs::write(&path, contents).unwrap();
+        }
+        path.to_str().unwrap().to_string()
     }
 
     /// Regression test case for https://github.com/penberg/vsr-rs/issues/12
