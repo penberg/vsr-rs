@@ -1,0 +1,547 @@
+---
+deadlock_detection: false
+options:
+  max_actions: 8
+  crash_on_yield: false
+---
+
+# The vsr-rs replica and cluster in FizzBee.
+#
+# One function per Rust function in `lib.rs`, with the same control flow.
+# Abstractions, all of which only add behaviour:
+#
+# - Timers are not modelled: every idle period may or may not be the one on
+#   which a wait runs out (`Idle` and `Timeout`).
+# - The state machine and replies are not modelled: the client table records
+#   whether a request was executed instead of its reply.
+# - The network is the set of every message ever sent. Delivery never
+#   removes one, so messages are lost, delayed, duplicated, and reordered.
+# - Crashes are explicit (`Crash`), not FizzBee's implicit ones: a replica
+#   restarts with nothing but its persisted view number.
+
+N = 3
+QUORUM = N // 2 + 1
+F = N // 2
+CLIENTS = [0]
+MAX_REQ = 2
+OPS = [0]
+MAX_VIEW = 1
+MAX_CRASHES = 1
+
+Status = enum('NORMAL', 'VIEW_CHANGE', 'STATE_TRANSFER', 'RECOVERING')
+
+action Init:
+    replicas = []
+    for i in range(N):
+        replicas.append(Replica(ID=i))
+    sent = set()
+    crashes = 0
+    next_nonce = 1
+    # Ghost: the first entry ever committed at each index.
+    history = {}
+
+atomic action Request:
+    c = oneof CLIENTS
+    n = oneof range(1, MAX_REQ + 1)
+    op = oneof OPS
+    for i in range(N):
+        sent.add(struct(dst=i, msg=struct(kind="Request", client_id=c, request_number=n, op=op)))
+
+role Replica:
+    action Init:
+        self.reset()
+
+    atomic action Receive:
+        m = oneof [e.msg for e in sent if e.dst == self.ID]
+        self.on_message(m)
+
+    atomic action Idle:
+        require self.status != Status.NORMAL or is_primary(self)
+        self.on_idle(False)
+
+    atomic action Timeout:
+        require self.view_number < MAX_VIEW
+        require self.status != Status.RECOVERING and not (self.status == Status.NORMAL and is_primary(self))
+        self.on_idle(True)
+
+    atomic action Crash:
+        require crashes < MAX_CRASHES
+        crashes += 1
+        nonce = next_nonce
+        next_nonce += 1
+        self.recover(self.view_number, nonce)
+
+    atomic func reset():
+        self.status = Status.NORMAL
+        self.view_number = 0
+        self.last_normal_view = 0
+        self.commit_number = 0
+        self.log = ()
+        self.acks = {}
+        self.client_table = {}
+        self.start_view_change_from = set()
+        self.do_view_change_sent = False
+        self.do_view_change_from = {}
+        self.catching_up = False
+        self.recovery_nonce = 0
+        self.recovery_responses = {}
+        # Set where the Rust would have panicked.
+        self.panicked = False
+
+    atomic func recover(view_number, nonce):
+        self.reset()
+        self.status = Status.RECOVERING
+        self.view_number = view_number
+        self.last_normal_view = view_number
+        self.recovery_nonce = nonce
+        self.send_recovery()
+
+    atomic func on_message(m):
+        if self.status == Status.RECOVERING and m.kind != "RecoveryResponse":
+            return
+        if m.kind == "Request":
+            self.on_request(m.client_id, m.request_number, m.op)
+        elif m.kind == "Prepare":
+            self.on_prepare(m.view_number, m.op_number, m.entry, m.commit_number)
+        elif m.kind == "PrepareOk":
+            self.on_prepare_ok(m.view_number, m.op_number, m.replica_id)
+        elif m.kind == "Commit":
+            self.on_commit(m.view_number, m.commit_number)
+        elif m.kind == "GetState":
+            self.on_get_state(m.replica_id, m.view_number, m.op_number)
+        elif m.kind == "NewState":
+            self.on_new_state(m.view_number, m.log, m.op_number_start, m.op_number_end, m.commit_number)
+        elif m.kind == "StartViewChange":
+            self.on_start_view_change(m.view_number, m.replica_id)
+        elif m.kind == "DoViewChange":
+            if len(m.log) != m.op_number:
+                self.panicked = True
+                return
+            dvc = struct(last_normal_view=m.last_normal_view, log=m.log, commit_number=m.commit_number)
+            self.on_do_view_change(m.view_number, m.replica_id, dvc)
+        elif m.kind == "StartView":
+            if len(m.log) != m.op_number:
+                self.panicked = True
+                return
+            self.on_start_view(m.view_number, m.log, m.commit_number)
+        elif m.kind == "Recovery":
+            self.on_recovery(m.replica_id, m.nonce, m.view_number)
+        elif m.kind == "RecoveryResponse":
+            self.on_recovery_response(m.view_number, m.nonce, m.replica_id, m.state)
+
+    atomic func on_request(client_id, request_number, op):
+        if not is_primary(self) or self.status != Status.NORMAL:
+            return
+        if client_id in self.client_table:
+            entry = self.client_table[client_id]
+            if request_number < entry.request_number:
+                return
+            if request_number == entry.request_number:
+                # The Rust re-sends the cached reply, if any.
+                return
+        entry = struct(client_id=client_id, request_number=request_number, op=op)
+        self.append_to_log(entry)
+        op_number = len(self.log)
+        self.acks[op_number] = set([self.ID])
+        self.send_to_others(prepare(self.view_number, op_number, entry, self.commit_number))
+
+    atomic func on_prepare(view_number, op_number, entry, commit_number):
+        accepted = self.accept_from_primary(view_number)
+        if not accepted:
+            return
+        if op_number > len(self.log) + 1:
+            self.state_transfer()
+            return
+        if op_number == len(self.log) + 1:
+            self.append_to_log(entry)
+        self.commit_up_to(min(commit_number, len(self.log)))
+        self.send_prepare_ok()
+
+    atomic func on_prepare_ok(view_number, op_number, replica_id):
+        if view_number != self.view_number or not is_primary(self) or self.status != Status.NORMAL:
+            return
+        if op_number <= self.commit_number:
+            return
+        if op_number not in self.acks:
+            return
+        acked_by = self.acks[op_number]
+        if replica_id in acked_by:
+            return
+        acked_by = acked_by.union([replica_id])
+        self.acks[op_number] = acked_by
+        if len(acked_by) != QUORUM:
+            return
+        self.commit_up_to(op_number)
+        self.acks = {o: self.acks[o] for o in self.acks if o > op_number}
+
+    atomic func on_commit(view_number, commit_number):
+        accepted = self.accept_from_primary(view_number)
+        if not accepted:
+            return
+        if commit_number > len(self.log):
+            self.state_transfer()
+            return
+        self.commit_up_to(commit_number)
+
+    atomic func accept_from_primary(view_number):
+        if view_number < self.view_number:
+            return False
+        if view_number > self.view_number:
+            self.catch_up_with_view(view_number)
+            return False
+        if self.status == Status.NORMAL:
+            return not is_primary(self)
+        if self.status == Status.VIEW_CHANGE:
+            self.catch_up_with_view(view_number)
+        return False
+
+    atomic func on_get_state(replica_id, view_number, op_number):
+        if self.status != Status.NORMAL or view_number != self.view_number or op_number > len(self.log):
+            return
+        self.send(replica_id, struct(kind="NewState", view_number=view_number, log=self.log[op_number:],
+                                     op_number_start=op_number, op_number_end=len(self.log),
+                                     commit_number=self.commit_number))
+
+    atomic func on_new_state(view_number, log, op_number_start, op_number_end, commit_number):
+        if view_number != self.view_number:
+            return
+        if len(log) != op_number_end - op_number_start:
+            self.panicked = True
+            return
+        if self.status == Status.STATE_TRANSFER:
+            op_number = len(self.log)
+            if op_number_start > op_number or op_number_end <= op_number:
+                return
+            for entry in log[op_number - op_number_start:]:
+                self.append_to_log(entry)
+            if len(self.log) != op_number_end:
+                self.panicked = True
+                return
+            self.commit_up_to(commit_number)
+            self.status = Status.NORMAL
+        elif self.status == Status.VIEW_CHANGE and self.catching_up:
+            if op_number_start != self.commit_number:
+                return
+            self.install_log(self.log[:op_number_start] + log)
+            if len(self.log) != op_number_end:
+                self.panicked = True
+                return
+            self.commit_up_to(commit_number)
+            self.enter_normal()
+        else:
+            return
+        self.send_prepare_ok()
+
+    atomic func state_transfer():
+        self.status = Status.STATE_TRANSFER
+        self.send_get_state(len(self.log))
+
+    atomic func on_start_view_change(view_number, replica_id):
+        if view_number < self.view_number:
+            return
+        if view_number > self.view_number:
+            self.start_view_change(view_number)
+        elif self.status != Status.VIEW_CHANGE:
+            if self.status == Status.NORMAL and is_primary(self):
+                self.send_start_view(replica_id)
+            return
+        self.start_view_change_from.add(replica_id)
+        self.maybe_send_do_view_change()
+
+    atomic func on_do_view_change(view_number, replica_id, dvc):
+        if view_number < self.view_number or primary_of(view_number) != self.ID:
+            return
+        if view_number > self.view_number:
+            self.start_view_change(view_number)
+        elif self.status == Status.NORMAL:
+            self.send_start_view(replica_id)
+            return
+        self.record_do_view_change(replica_id, dvc)
+
+    atomic func on_start_view(view_number, log, commit_number):
+        if view_number < self.view_number or (view_number == self.view_number and self.status != Status.VIEW_CHANGE):
+            return
+        self.view_number = view_number
+        self.install_log(log)
+        self.commit_up_to(commit_number)
+        self.enter_normal()
+        self.acks = {}
+        self.send_prepare_ok()
+
+    atomic func start_view_change(view_number):
+        self.view_number = view_number
+        self.status = Status.VIEW_CHANGE
+        self.catching_up = False
+        self.clear_view_change_state()
+        self.send_to_others(struct(kind="StartViewChange", view_number=view_number, replica_id=self.ID))
+        self.maybe_send_do_view_change()
+
+    atomic func clear_view_change_state():
+        self.start_view_change_from = set()
+        self.do_view_change_sent = False
+        self.do_view_change_from = {}
+
+    atomic func maybe_send_do_view_change():
+        if self.status != Status.VIEW_CHANGE or self.catching_up or self.do_view_change_sent:
+            return
+        if len(self.start_view_change_from) < F:
+            return
+        self.do_view_change_sent = True
+        self.send_do_view_change()
+
+    atomic func send_do_view_change():
+        dvc = struct(last_normal_view=self.last_normal_view, log=self.log, commit_number=self.commit_number)
+        primary_id = primary_of(self.view_number)
+        if primary_id == self.ID:
+            self.record_do_view_change(self.ID, dvc)
+        else:
+            self.send(primary_id, struct(kind="DoViewChange", view_number=self.view_number, replica_id=self.ID,
+                                         last_normal_view=dvc.last_normal_view, log=dvc.log,
+                                         op_number=len(dvc.log), commit_number=dvc.commit_number))
+
+    atomic func record_do_view_change(replica_id, dvc):
+        self.do_view_change_from[replica_id] = dvc
+        if len(self.do_view_change_from) < QUORUM:
+            return
+        best = best_do_view_change(self.do_view_change_from)
+        commit_number = max([d.commit_number for d in self.do_view_change_from.values()])
+        self.install_log(best.log)
+        self.commit_up_to(commit_number)
+        self.enter_normal()
+        self.acks = {o: set([self.ID]) for o in range(self.commit_number + 1, len(self.log) + 1)}
+        for i in range(N):
+            if i != self.ID:
+                self.send_start_view(i)
+
+    atomic func send_start_view(replica_id):
+        self.send(replica_id, struct(kind="StartView", view_number=self.view_number, log=self.log,
+                                     op_number=len(self.log), commit_number=self.commit_number))
+
+    atomic func catch_up_with_view(view_number):
+        if self.view_number == view_number and self.catching_up:
+            return
+        self.view_number = view_number
+        self.status = Status.VIEW_CHANGE
+        self.catching_up = True
+        self.clear_view_change_state()
+        self.send_get_state(self.commit_number)
+
+    atomic func enter_normal():
+        self.status = Status.NORMAL
+        self.last_normal_view = self.view_number
+        self.catching_up = False
+        self.clear_view_change_state()
+
+    atomic func on_recovery(replica_id, nonce, view_number):
+        if view_number > self.view_number and self.status != Status.RECOVERING:
+            self.start_view_change(view_number)
+            return
+        if self.status != Status.NORMAL:
+            return
+        state = None
+        if is_primary(self):
+            state = struct(log=self.log, commit_number=self.commit_number)
+        self.send(replica_id, struct(kind="RecoveryResponse", view_number=self.view_number, nonce=nonce,
+                                     replica_id=self.ID, state=state))
+
+    atomic func on_recovery_response(view_number, nonce, replica_id, state):
+        if self.status != Status.RECOVERING or nonce != self.recovery_nonce:
+            return
+        self.recovery_responses[replica_id] = struct(view_number=view_number, state=state)
+        if len(self.recovery_responses) < QUORUM:
+            return
+        latest_view = max([r.view_number for r in self.recovery_responses.values()])
+        if latest_view < self.view_number:
+            return
+        primary_id = primary_of(latest_view)
+        if primary_id not in self.recovery_responses:
+            return
+        response = self.recovery_responses[primary_id]
+        if response.state == None or response.view_number != latest_view:
+            return
+        self.recovery_responses = {}
+        self.view_number = latest_view
+        self.install_log(response.state.log)
+        self.commit_up_to(response.state.commit_number)
+        self.enter_normal()
+
+    atomic func send_recovery():
+        self.send_to_others(struct(kind="Recovery", replica_id=self.ID, nonce=self.recovery_nonce,
+                                   view_number=self.view_number))
+
+    atomic func on_idle(timeout):
+        if self.status == Status.NORMAL and is_primary(self):
+            self.send_to_others(struct(kind="Commit", view_number=self.view_number, commit_number=self.commit_number))
+            for op_number in range(self.commit_number + 1, len(self.log) + 1):
+                self.send_to_others(prepare(self.view_number, op_number, self.log[op_number - 1], self.commit_number))
+        elif self.status == Status.RECOVERING:
+            self.send_recovery()
+        elif self.status == Status.NORMAL or self.status == Status.STATE_TRANSFER:
+            if self.status == Status.STATE_TRANSFER:
+                self.state_transfer()
+            if timeout:
+                self.start_view_change(self.view_number + 1)
+        elif timeout:
+            self.start_view_change(self.view_number + 1)
+        elif self.catching_up:
+            self.send_get_state(self.commit_number)
+        else:
+            self.send_to_others(struct(kind="StartViewChange", view_number=self.view_number, replica_id=self.ID))
+            if self.do_view_change_sent:
+                self.send_do_view_change()
+
+    atomic func append_to_log(entry):
+        self.client_table[entry.client_id] = struct(request_number=entry.request_number, replied=False)
+        self.log = self.log + (entry,)
+
+    atomic func install_log(log):
+        if len(log) < self.commit_number:
+            self.panicked = True
+            return
+        old_table = self.client_table
+        self.client_table = {}
+        for i in range(len(log)):
+            entry = log[i]
+            old = old_table.get(entry.client_id)
+            replied = (i < self.commit_number and old != None and old.request_number == entry.request_number
+                       and old.replied)
+            self.client_table[entry.client_id] = struct(request_number=entry.request_number, replied=replied)
+        self.log = log
+
+    atomic func commit_up_to(commit_number):
+        for _ in range(self.commit_number, commit_number):
+            self.commit_op(self.commit_number)
+
+    atomic func commit_op(op_idx):
+        if op_idx >= len(self.log):
+            self.panicked = True
+            return
+        entry = self.log[op_idx]
+        if op_idx not in history:
+            history[op_idx] = entry
+        self.commit_number += 1
+        client = self.client_table.get(entry.client_id)
+        if client != None and client.request_number == entry.request_number:
+            self.client_table[entry.client_id] = struct(request_number=entry.request_number, replied=True)
+
+    atomic func send_prepare_ok():
+        self.send_to_primary(struct(kind="PrepareOk", view_number=self.view_number, op_number=len(self.log),
+                                    replica_id=self.ID))
+
+    atomic func send_get_state(op_number):
+        self.send_to_primary(struct(kind="GetState", replica_id=self.ID, view_number=self.view_number,
+                                    op_number=op_number))
+
+    atomic func send_to_primary(m):
+        self.send(primary_of(self.view_number), m)
+
+    atomic func send_to_others(m):
+        for i in range(N):
+            if i != self.ID:
+                self.send(i, m)
+
+    atomic func send(dst, m):
+        sent.add(struct(dst=dst, msg=m))
+
+def primary_of(view_number):
+    return view_number % N
+
+def is_primary(r):
+    return r.ID == primary_of(r.view_number)
+
+def prepare(view_number, op_number, entry, commit_number):
+    return struct(kind="Prepare", view_number=view_number, op_number=op_number, entry=entry,
+                  commit_number=commit_number)
+
+# `Iterator::max_by_key` over a `BTreeMap` returns the last of equal maxima,
+# so the one with the greatest key, and among those the greatest replica id.
+def best_do_view_change(dvcs):
+    best = None
+    for i in sorted(dvcs.keys()):
+        d = dvcs[i]
+        if best == None or (d.last_normal_view, len(d.log)) >= (best.last_normal_view, len(best.log)):
+            best = d
+    return best
+
+def committed_prefix(r):
+    return r.log[:r.commit_number]
+
+def entry_at(log, i):
+    if i < len(log):
+        return log[i]
+    return None
+
+# Safety, as in `lean/Vsr/Safety.lean` and `simulator/properties.rs`.
+
+always assertion NoPanic:
+    return all([not r.panicked for r in replicas])
+
+always assertion CommitBounded:
+    return all([r.commit_number <= len(r.log) for r in replicas])
+
+# A replica's commit number never goes down, except by a crash.
+transition assertion CommitMonotonic(before, after):
+    for i in range(N):
+        b = before.replicas[i]
+        a = after.replicas[i]
+        if a.commit_number < b.commit_number and a.recovery_nonce == b.recovery_nonce:
+            return False
+    return True
+
+always assertion PrefixAgreement:
+    for a in replicas:
+        for b in replicas:
+            pa = committed_prefix(a)
+            pb = committed_prefix(b)
+            for i in range(min(len(pa), len(pb))):
+                if pa[i] != pb[i]:
+                    return False
+    return True
+
+# A committed prefix is never rewritten, even by the whole cluster at once.
+always assertion HistoryAgreement:
+    for r in replicas:
+        p = committed_prefix(r)
+        for i in range(len(p)):
+            if history.get(i) != p[i]:
+                return False
+    return True
+
+# Every quorum the replicas that are not recovering could form includes one
+# that holds every committed entry at its index.
+always assertion Durability:
+    participants = [r for r in replicas if r.status != Status.RECOVERING]
+    for a in participants:
+        p = committed_prefix(a)
+        for i in range(len(p)):
+            holders = len([o for o in participants if entry_at(o.log, i) == p[i]])
+            if holders < len(participants) + 1 - QUORUM:
+                return False
+    return True
+
+always assertion NoDuplicateOps:
+    for r in replicas:
+        requests = [(e.client_id, e.request_number) for e in committed_prefix(r)]
+        if len(requests) != len(set(requests)):
+            return False
+    return True
+
+# Witnesses: states worth reaching, to show the checks have something to check.
+
+exists assertion Committed:
+    return len([r for r in replicas if r.commit_number >= 1]) > 0
+
+exists assertion ViewChanged:
+    return len([r for r in replicas if r.status == Status.NORMAL and r.view_number >= 1]) > 0
+
+exists assertion CommittedAfterViewChange:
+    return len([r for r in replicas if r.status == Status.NORMAL and r.view_number >= 1 and r.commit_number >= 1]) > 0
+
+exists assertion StateTransferred:
+    return len([r for r in replicas if r.status == Status.STATE_TRANSFER]) > 0
+
+exists assertion CaughtUp:
+    return len([r for r in replicas if r.catching_up]) > 0
+
+exists assertion Recovered:
+    return crashes > 0 and len([r for r in replicas if r.status == Status.RECOVERING]) == 0
